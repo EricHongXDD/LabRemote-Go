@@ -2,9 +2,11 @@
 
 > 2026-07-18 架构更新：本文后续关于 Windows RAS、L2TP/IPsec、VPN Profile 和系统 `/32` 路由的设计已被进程内 SoftEther 原生传输取代，仅保留为历史设计记录。旧 RAS 源码由 `legacy_ras` 构建标签隔离，不进入默认测试、构建或发布产物。当前实现以 `README.md`、`internal/softether` 和 `internal/vpn/isolated_manager.go` 为准：应用不连接或修改 Windows VPN，不创建系统网卡或路由，SSH 通过用户态 TCP/IP 栈获得专用 `net.Conn`。
 
+> 2026-07-19 平台更新：当前实现已提供 Windows amd64、Linux amd64 与 macOS Universal 发行包。Windows 使用 Credential Manager，macOS 使用 Keychain，Linux 使用 Secret Service。本文后续标为第一版范围的 Windows RAS 与单平台设计仍作为历史记录保留。
+
 > 文档版本：1.0
 > 编写日期：2026-07-18
-> 目标平台：Windows 10 / Windows 11，amd64
+> 目标平台：Windows 10/11 amd64、Linux amd64、macOS Universal
 > 核心语言：Go
 > 产品形态：类 Xshell 桌面客户端，可选启用本机 MCP 服务
 

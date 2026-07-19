@@ -2,9 +2,9 @@
   "$schema": "https://wails.io/schemas/config.v2.json",
   "name": "LabRemote",
   "outputfilename": "LabRemote",
-  "frontend:install": "npm.cmd ci",
-  "frontend:build": "npm.cmd run build",
-  "frontend:dev:watcher": "npm.cmd run dev",
+  "frontend:install": "npm ci",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "author": {
     "name": "EricHongXDD",
@@ -15,6 +15,6 @@
     "productName": "LabRemote",
     "productVersion": "1.0.0",
     "copyright": "Copyright © 2026 EricHongXDD",
-    "comments": "隔离隧道 + SSH 终端 + 文件传输 + 网页访问 + MCP Windows 客户端"
+    "comments": "隔离隧道 + SSH 终端 + 文件传输 + 网页访问 + MCP 跨平台客户端"
   }
 }
