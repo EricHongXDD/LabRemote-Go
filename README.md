@@ -26,7 +26,7 @@ LabRemote 是面向 Windows 10/11 amd64 的隔离隧道 + SSH + 网页访问 + M
 
 ## 构建环境
 
-- Go 1.25.1
+- Go 1.25.12
 - Wails CLI 2.13.0
 - Node.js 22.18.0
 - npm 10.9.3

@@ -5,7 +5,7 @@
 ## 开发环境
 
 - Windows 10/11 amd64；
-- Go 1.25.1；
+- Go 1.25.12；
 - Node.js 22.18.0 与 npm 10.9.3；
 - Wails CLI 2.13.0；
 - 仅在生成 NSIS 安装包时需要 NSIS 3.12。
