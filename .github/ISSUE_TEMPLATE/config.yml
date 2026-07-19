@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞报告
+    url: https://github.com/EricHongXDD/LabRemote-Go/security
+    about: 请勿在公开 Issue 中披露凭据或未修复漏洞细节。

@@ -1,0 +1,25 @@
+name: 功能建议
+description: 提议可验证的新能力或体验改进
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 使用场景与问题
+      description: 描述当前工作流中遇到的具体问题。
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: 建议方案
+      description: 描述期望行为、交互和兼容性要求。
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: 隔离与安全影响
+      description: 若涉及网络、凭据、命令执行或 MCP，请说明应维持的安全边界。

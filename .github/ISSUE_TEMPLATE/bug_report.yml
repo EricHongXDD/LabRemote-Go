@@ -1,0 +1,57 @@
+name: 缺陷报告
+description: 报告可稳定复现的功能问题
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: 请先移除服务器地址、用户名、密码、Token、私钥、日志中的敏感字段。
+  - type: input
+    id: version
+    attributes:
+      label: LabRemote 版本
+      placeholder: 例如 1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: windows
+    attributes:
+      label: Windows 版本
+      options:
+        - Windows 11
+        - Windows 10
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 说明实际行为与预期行为。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开……
+        2. 连接……
+        3. 观察到……
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 已脱敏的日志或截图
+      description: 请勿粘贴真实凭据、Token、私钥、内部服务器地址或用户数据。
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已确认内容不含真实凭据或个人信息。
+          required: true
+        - label: 这不是需要私密披露的安全漏洞。
+          required: true

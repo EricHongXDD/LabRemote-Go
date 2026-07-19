@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Go 与前端测试
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: 配置 Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.18.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 验证 Go 依赖
+        run: go mod verify
+
+      - name: 运行 Go 测试
+        run: go test ./...
+
+      - name: 运行 Go 静态检查
+        run: go vet ./...
+
+      - name: 安装前端依赖
+        working-directory: frontend
+        run: npm.cmd ci
+
+      - name: 运行前端测试
+        working-directory: frontend
+        run: npm.cmd test
+
+      - name: 构建前端
+        working-directory: frontend
+        run: npm.cmd run build
