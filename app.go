@@ -60,11 +60,11 @@ type DesktopApp struct {
 func NewDesktopApp() (*DesktopApp, error) {
 	configRoot, err := os.UserConfigDir()
 	if err != nil {
-		return nil, fmt.Errorf("定位 AppData 配置目录失败: %w", err)
+		return nil, fmt.Errorf("定位用户配置目录失败: %w", err)
 	}
 	cacheRoot, err := os.UserCacheDir()
 	if err != nil {
-		return nil, fmt.Errorf("定位 AppData 本地目录失败: %w", err)
+		return nil, fmt.Errorf("定位用户缓存目录失败: %w", err)
 	}
 	configDirectory := filepath.Join(configRoot, "LabRemote")
 	logDirectory := filepath.Join(cacheRoot, "LabRemote", "logs")
@@ -80,7 +80,7 @@ func NewDesktopApp() (*DesktopApp, error) {
 	eventSink := &wailsEventSink{logger: appLogger}
 	var sink events.Sink = eventSink
 	repository := profile.NewJSONRepository(filepath.Join(configDirectory, "profiles.json"))
-	secretStore := secrets.NewWindowsStore()
+	secretStore := secrets.NewPlatformStore()
 	knownHosts := sshclient.NewKnownHosts(filepath.Join(configDirectory, "known_hosts"))
 	vpnManager := vpn.NewIsolatedManager(repository, secretStore, sink)
 	sshManager := sshclient.NewManager(repository, secretStore, knownHosts, sink, vpnManager)

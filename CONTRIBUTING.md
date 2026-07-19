@@ -4,11 +4,13 @@
 
 ## 开发环境
 
-- Windows 10/11 amd64；
+- Windows 10/11 amd64、Linux amd64 或 macOS；
 - Go 1.25.12；
 - Node.js 22.18.0 与 npm 10.9.3；
 - Wails CLI 2.13.0；
-- 仅在生成 NSIS 安装包时需要 NSIS 3.12。
+- Windows NSIS 打包需要 NSIS 3.12；
+- Linux Wails 构建需要 GTK3 与 WebKitGTK 4.1；
+- macOS Universal 构建需要 Xcode Command Line Tools。
 
 ## 本地验证
 
@@ -29,6 +31,8 @@ npm.cmd run build
 ```powershell
 .\scripts\build.ps1
 ```
+
+该脚本仅生成 Windows 发行包。Linux 与 macOS 的可复现命令和打包格式以 `.github/workflows/release.yml` 为准。
 
 ## 提交要求
 

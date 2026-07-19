@@ -2,14 +2,14 @@
 
 [![CI](https://github.com/EricHongXDD/LabRemote-Go/actions/workflows/ci.yml/badge.svg)](https://github.com/EricHongXDD/LabRemote-Go/actions/workflows/ci.yml)
 [![Release](https://github.com/EricHongXDD/LabRemote-Go/actions/workflows/release.yml/badge.svg)](https://github.com/EricHongXDD/LabRemote-Go/actions/workflows/release.yml)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-38bdf8)](https://github.com/EricHongXDD/LabRemote-Go/releases)
+[![Platforms: Windows, Linux, macOS](docs/assets/platforms.svg)](#支持平台与下载)
 
-LabRemote 是面向 Windows 10/11 amd64 的隔离隧道 + SSH + 网页访问 + MCP 桌面客户端。它直接使用 SoftEther 原生协议，在应用进程内运行 DHCP、ARP 和用户态 TCP/IP 栈，只把配置的 SSH 连接及用户明确打开的 HTTP/HTTPS 资源送入隧道。它不会连接、创建或修改 Windows VPN，也不会新增系统网卡或路由。
+LabRemote 是面向 Windows、Linux 和 macOS 的隔离隧道 + SSH + 网页访问 + MCP 桌面客户端。它直接使用 SoftEther 原生协议，在应用进程内运行 DHCP、ARP 和用户态 TCP/IP 栈，只把配置的 SSH 连接及用户明确打开的 HTTP/HTTPS 资源送入隧道。在 Windows 上，它不会连接、创建或修改系统 VPN，也不会新增系统网卡或路由。
 
 ## 已实现能力
 
 - 连接配置新增、编辑、删除与分组展示；
-- 隧道密码和 SSH 密码均保存到 Windows Credential Manager；旧配置中的预共享密钥仅为兼容保留，不再参与连接；
+- 隧道密码和 SSH 密码保存到操作系统安全凭据库：Windows Credential Manager、macOS Keychain 或 Linux Secret Service；旧配置中的预共享密钥仅为兼容保留，不再参与连接；
 - SoftEther 原生 TLS 会话、Virtual Hub 自动发现和 DHCP 地址获取；
 - WireGuard netstack/gVisor 用户态 TCP/IP；SSH 拨号仅允许配置的主机与端口；
 - SoftEther 服务器证书首次确认、SHA-256 固定和变化阻断；
@@ -22,7 +22,7 @@ LabRemote 是面向 Windows 10/11 amd64 的隔离隧道 + SSH + 网页访问 + M
 - 10 个 MCP 工具、Profile 最小权限、Bearer Token、Host/Origin 校验、速率与并发限制；
 - MCP 开启后可导出包含当前客户端配置、授权连接、工具协议、安全规范和终端操作工作流的 AI Markdown 手册；
 - JSONL 应用日志与只保存命令 SHA256 的 MCP 审计日志；
-- Windows amd64 可执行文件与 NSIS 安装包构建。
+- Windows amd64 可执行文件与 NSIS 安装包、Linux amd64 压缩包、macOS Universal 应用包构建。
 
 ## 构建环境
 
@@ -32,6 +32,8 @@ LabRemote 是面向 Windows 10/11 amd64 的隔离隧道 + SSH + 网页访问 + M
 - npm 10.9.3
 - NSIS 3.12
 - MCP Go SDK 1.6.1
+
+Linux 构建需要 GTK3 与 WebKitGTK 4.1；macOS 构建需要 Xcode Command Line Tools。发行工作流会在对应的原生 GitHub Runner 上安装并验证这些依赖。
 
 依赖版本固定在 `go.mod`、`go.sum`、`frontend/package.json` 和 `frontend/package-lock.json`。
 
@@ -53,16 +55,20 @@ npm.cmd run build
 .\scripts\build.ps1
 ```
 
-输出位于 `build\bin`。详细使用步骤见 [用户使用手册](docs/用户使用手册.md)，MCP 客户端配置、工具参数与安全边界见 [MCP 使用、配置与安全手册](docs/MCP配置与安全.md)。
+该脚本生成 Windows 发行包，输出位于 `build\bin`。Linux 和 macOS 使用 `.github/workflows/release.yml` 中的原生 Runner 构建命令。详细使用步骤见 [用户使用手册](docs/用户使用手册.md)，MCP 客户端配置、工具参数与安全边界见 [MCP 使用、配置与安全手册](docs/MCP配置与安全.md)。
 
-## 下载与发行
+## 支持平台与下载
 
 - 已发布版本：访问 [GitHub Releases](https://github.com/EricHongXDD/LabRemote-Go/releases)；
-- `LabRemote.exe`：免安装主程序；
+- `LabRemote-windows-amd64.exe`：Windows amd64 免安装主程序；
 - `LabRemote-amd64-installer.exe`：Windows amd64 用户级 NSIS 安装包；
-- `SHA256SUMS.txt`：发行文件的 SHA-256 校验值。
+- `LabRemote-linux-amd64.tar.gz`：Linux amd64 可执行文件、README 与许可证；运行时需要 GTK3、WebKitGTK 4.1 和可用的 Secret Service；
+- `LabRemote-macos-universal.zip`：同时支持 Apple Silicon 与 Intel 的 macOS `.app`；凭据保存到 Keychain；
+- `SHA256SUMS.txt`：全部发行文件的 SHA-256 校验值。
 
-推送符合 `v*` 格式的标签会触发发行工作流。标签版本应与 `wails.json` 中的 `info.productVersion` 一致，例如 `v1.0.0`。也可以手动运行发行工作流，仅构建并上传供检查的 Actions Artifact，不创建 GitHub Release。
+推送符合 `v*` 格式的标签会自动构建三个平台并把产物上传到对应 GitHub Release。手动运行发行工作流时填写版本标签也会自动创建或更新 Release；只有显式关闭“发布到 Releases”时才仅保留 Actions Artifact。标签版本必须与 `wails.json` 中的 `info.productVersion` 一致，例如 `v1.0.0`。
+
+当前 Windows 与 macOS 产物尚未配置代码签名或 Apple 公证；首次运行时操作系统可能显示未知开发者提示。请先用 `SHA256SUMS.txt` 核验下载文件。
 
 ## 项目协作
 
@@ -70,7 +76,7 @@ npm.cmd run build
 
 ## 隔离边界
 
-SoftEther Virtual Hub 必须提供 DHCP 地址。LabRemote 不会随机选择客户端地址。连接期间 Windows 的“VPN”仍显示未连接，系统默认路由和其他应用流量不受影响。
+SoftEther Virtual Hub 必须提供 DHCP 地址。LabRemote 不会随机选择客户端地址。连接期间不会创建系统 VPN 或修改默认路由，其他应用流量不受影响；在 Windows 上，“VPN”设置页仍会显示未连接。
 
 历史 Windows RAS 实现仅作为迁移参考保留，并由 `legacy_ras` 构建标签隔离；默认测试、构建和发布产物均不编译该实现。
 
@@ -78,4 +84,4 @@ SoftEther Virtual Hub 必须提供 DHCP 地址。LabRemote 不会随机选择客
 
 ## 许可证
 
-本仓库目前未附加开源许可证。代码公开可见不代表授予复制、修改或再分发许可；如需使用，请先联系仓库所有者取得授权。第三方组件许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+LabRemote 使用 [MIT License](LICENSE) 开源。第三方组件许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

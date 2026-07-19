@@ -4,6 +4,11 @@
 
 ## [未发布]
 
+- 使用 MIT License 开源；
+- 增加 Linux amd64 与 macOS Universal 发行包；
+- macOS 使用 Keychain、Linux 使用 Secret Service 保存凭据；
+- 手动或标签触发的多平台构建会自动汇总到 GitHub Release。
+
 ## [1.0.0] - 2026-07-19
 
 - 首次公开发布；
