@@ -40,12 +40,6 @@ jobs:
       - name: 验证 Go 依赖
         run: go mod verify
 
-      - name: 运行 Go 测试
-        run: go test ./...
-
-      - name: 运行 Go 静态检查
-        run: go vet ./...
-
       - name: 安装前端依赖
         working-directory: frontend
         run: npm.cmd ci
@@ -57,3 +51,9 @@ jobs:
       - name: 构建前端
         working-directory: frontend
         run: npm.cmd run build
+
+      - name: 运行 Go 测试
+        run: go test ./...
+
+      - name: 运行 Go 静态检查
+        run: go vet ./...

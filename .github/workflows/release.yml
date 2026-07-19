@@ -50,12 +50,13 @@ jobs:
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
           go mod verify
-          go test ./...
-          go vet ./...
           Push-Location frontend
           npm.cmd ci
           npm.cmd test
+          npm.cmd run build
           Pop-Location
+          go test ./...
+          go vet ./...
 
       - name: 安装 Wails 与 NSIS
         shell: pwsh

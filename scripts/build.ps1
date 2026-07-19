@@ -27,12 +27,6 @@ if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue)) {
     throw '未找到 NSIS 3.12 makensis.exe。请安装 NSIS，或将官方便携包解压到 .tools\nsis-portable\nsis-3.12。'
 }
 
-Set-Location -LiteralPath $projectRoot
-go test ./...
-if ($LASTEXITCODE -ne 0) {
-    throw "Go 测试失败，退出码：$LASTEXITCODE"
-}
-
 Set-Location -LiteralPath (Join-Path $projectRoot 'frontend')
 npm.cmd ci
 if ($LASTEXITCODE -ne 0) {
@@ -48,6 +42,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Set-Location -LiteralPath $projectRoot
+go test ./...
+if ($LASTEXITCODE -ne 0) {
+    throw "Go 测试失败，退出码：$LASTEXITCODE"
+}
+
 & $wails build -clean -platform windows/amd64 -webview2 embed -nsis -installscope user -trimpath -nocolour
 if ($LASTEXITCODE -ne 0) {
     throw "Wails 构建失败，退出码：$LASTEXITCODE"
