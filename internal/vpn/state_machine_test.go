@@ -9,6 +9,8 @@ import (
 
 func TestVPNStateTransitions(t *testing.T) {
 	valid := [][2]model.VPNState{
+		{model.VPNDisconnected, model.VPNNotRequired},
+		{model.VPNNotRequired, model.VPNDisconnected},
 		{model.VPNDisconnected, model.VPNPreparing},
 		{model.VPNPreparing, model.VPNDialing},
 		{model.VPNDialing, model.VPNConnected},

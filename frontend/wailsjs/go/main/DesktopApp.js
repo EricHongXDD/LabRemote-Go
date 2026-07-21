@@ -102,6 +102,10 @@ export function SelectDownloadDirectory() {
   return window['go']['main']['DesktopApp']['SelectDownloadDirectory']();
 }
 
+export function SelectSSHPrivateKey() {
+  return window['go']['main']['DesktopApp']['SelectSSHPrivateKey']();
+}
+
 export function SelectUploadDirectory() {
   return window['go']['main']['DesktopApp']['SelectUploadDirectory']();
 }

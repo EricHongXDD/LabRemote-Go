@@ -6,6 +6,7 @@ type VPNState string
 
 const (
 	VPNDisconnected  VPNState = "disconnected"
+	VPNNotRequired   VPNState = "not_required"
 	VPNPreparing     VPNState = "preparing"
 	VPNDialing       VPNState = "dialing"
 	VPNConnected     VPNState = "connected"
@@ -26,14 +27,15 @@ type VPNStatus struct {
 }
 
 type ConnectionStatus struct {
-	ProfileID       string    `json:"profile_id"`
-	VPN             VPNStatus `json:"vpn"`
-	SSHConnected    bool      `json:"ssh_connected"`
-	UISessions      int       `json:"ui_sessions"`
-	MCPSessions     int       `json:"mcp_sessions"`
-	ActiveCommands  int       `json:"active_commands"`
-	ActiveTransfers int       `json:"active_transfers"`
-	BrowserSessions int       `json:"browser_sessions"`
+	ProfileID       string         `json:"profile_id"`
+	ConnectionMode  ConnectionMode `json:"connection_mode"`
+	VPN             VPNStatus      `json:"vpn"`
+	SSHConnected    bool           `json:"ssh_connected"`
+	UISessions      int            `json:"ui_sessions"`
+	MCPSessions     int            `json:"mcp_sessions"`
+	ActiveCommands  int            `json:"active_commands"`
+	ActiveTransfers int            `json:"active_transfers"`
+	BrowserSessions int            `json:"browser_sessions"`
 }
 
 type TerminalChunk struct {

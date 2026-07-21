@@ -34,7 +34,7 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("## 1. 给 AI 的强制操作指令\n\n")
 	guide.WriteString("你正在通过名为 `labremote` 的 MCP 服务操作远程终端。必须遵守以下规则：\n\n")
 	guide.WriteString("1. 开始任务时先调用 `profiles_list`，从返回值取得真实 `profile_id`，不得猜测或复用其他环境的 ID。\n")
-	guide.WriteString("2. 调用 `connection_status` 检查状态；需要时再调用 `vpn_connect`。工具名中的 VPN 是兼容名称，实际建立的是 LabRemote 进程内 SoftEther 隔离隧道。\n")
+	guide.WriteString("2. 调用 `connection_status` 检查状态；需要时再调用 `vpn_connect`。工具名中的 VPN 是兼容名称：`isolated_tunnel` 配置会建立进程内 SoftEther 隧道和 SSH，`direct_ssh` 配置只建立 SSH。\n")
 	guide.WriteString("3. 一次性命令优先使用 `ssh_exec`；只有 `vim`、`top`、`tmux`、REPL 等交互程序才使用 `ssh_session_*`。\n")
 	guide.WriteString("4. 判断命令是否成功必须同时检查 `exit_code`、`stderr` 和 `truncated`，不能只看 `ok`。\n")
 	guide.WriteString("5. 删除/覆盖数据、安装软件、重启服务或主机、修改账号权限、网络、防火墙和安全配置前，必须向用户说明具体影响并取得明确确认。\n")
@@ -55,11 +55,11 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	if len(profiles) == 0 {
 		guide.WriteString("**当前没有连接配置授权给 MCP。** 请在 LabRemote 中编辑连接，至少开启“允许 MCP 看到此配置”，然后重新导出本文档。\n\n")
 	} else {
-		guide.WriteString("| profile_id | 名称 | SSH 目标 | 已授权能力 |\n")
-		guide.WriteString("|---|---|---|---|\n")
+		guide.WriteString("| profile_id | 名称 | 连接方式 | SSH 目标 | 已授权能力 |\n")
+		guide.WriteString("|---|---|---|---|---|\n")
 		for _, value := range profiles {
-			fmt.Fprintf(&guide, "| `%s` | %s | `%s:%d` | %s |\n",
-				markdownInline(value.ID), markdownTable(value.DisplayName), markdownInline(value.SSH.ServerAddress), value.SSH.Port, markdownTable(profileCapabilities(value)))
+			fmt.Fprintf(&guide, "| `%s` | %s | %s | `%s:%d` | %s |\n",
+				markdownInline(value.ID), markdownTable(value.DisplayName), connectionModeLabel(value), markdownInline(value.SSH.ServerAddress), value.SSH.Port, markdownTable(profileCapabilities(value)))
 		}
 		guide.WriteString("\n权限以 MCP 服务实时检查结果为准。用户在 LabRemote 中撤销权限后，本文档中的旧表格不会继续授权。\n\n")
 	}
@@ -68,9 +68,9 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("| 工具 | 用途 | 关键输入 |\n")
 	guide.WriteString("|---|---|---|\n")
 	guide.WriteString("| `profiles_list` | 列出 MCP 可见连接及状态 | 无输入 |\n")
-	guide.WriteString("| `connection_status` | 查询隧道、SSH、会话和传输状态 | `profile_id` |\n")
-	guide.WriteString("| `vpn_connect` | 建立进程内隔离隧道并认证 SSH | `profile_id` |\n")
-	guide.WriteString("| `vpn_disconnect` | 断开隔离隧道 | `profile_id`, `force` |\n")
+	guide.WriteString("| `connection_status` | 查询连接方式、隧道、SSH、会话和传输状态 | `profile_id` |\n")
+	guide.WriteString("| `vpn_connect` | 按配置建立隔离隧道 + SSH 或仅 SSH | `profile_id` |\n")
+	guide.WriteString("| `vpn_disconnect` | 断开 SSH 与可选隔离隧道 | `profile_id`, `force` |\n")
 	guide.WriteString("| `ssh_exec` | 执行非交互 Shell 命令 | `profile_id`, `command`, `timeout_seconds`, `max_output_bytes` |\n")
 	guide.WriteString("| `ssh_session_open` | 打开 MCP 专属 PTY | `profile_id`, `cols`, `rows` |\n")
 	guide.WriteString("| `ssh_session_write` | 向 PTY 写入 Base64 字节 | `session_id`, `data_base64` |\n")
@@ -81,7 +81,7 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("## 5. 推荐工作流：执行一次命令\n\n")
 	guide.WriteString("1. 调用 `profiles_list`。\n")
 	guide.WriteString("2. 对选定 ID 调用 `connection_status`。\n")
-	guide.WriteString("3. 未连接时调用 `vpn_connect`，随后再次查询状态，确认 `vpn_status=connected`、`route_ready=true`、`ssh_connected=true`。\n")
+	guide.WriteString("3. 未连接时调用 `vpn_connect`，随后再次查询状态。隔离隧道配置应为 `vpn_status=connected`；仅 SSH 配置应为 `vpn_status=not_required`；两者都必须确认 `route_ready=true`、`ssh_connected=true`。\n")
 	guide.WriteString("4. 调用 `ssh_exec`：\n\n")
 	guide.WriteString("```json\n")
 	fmt.Fprintf(&guide, "{\n  \"profile_id\": %q,\n  \"command\": \"pwd && uname -a\",\n  \"timeout_seconds\": 30,\n  \"max_output_bytes\": 1048576\n}\n", exampleProfileID(profiles))
@@ -105,7 +105,7 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("- 非交互命令最多并发 4 个；MCP 交互会话最多 8 个。\n")
 	guide.WriteString("- `ssh_session_write` 单次解码后最多 65536 字节。\n")
 	guide.WriteString("- `ssh_session_read.max_bytes` 单次最大 1 MiB；`wait_ms` 范围为 0-30000。\n")
-	guide.WriteString("- `vpn_status` 可能为 `disconnected`、`preparing`、`dialing`、`connected`、`reconnecting`、`disconnecting` 或 `failed`。\n")
+	guide.WriteString("- `connection_mode` 为 `isolated_tunnel` 或 `direct_ssh`。`vpn_status=not_required` 表示该配置直接连接 SSH；其他状态包括 `disconnected`、`preparing`、`dialing`、`connected`、`reconnecting`、`disconnecting`、`failed`。\n")
 	guide.WriteString("- `vpn_disconnect(force=true)` 仍不能关闭图形界面创建的终端。\n\n")
 
 	guide.WriteString("## 8. 常见错误处理\n\n")
@@ -135,9 +135,16 @@ func profileCapabilities(value model.ConnectionProfile) string {
 		capabilities = append(capabilities, "交互终端")
 	}
 	if value.MCPPolicy.AllowDisconnect {
-		capabilities = append(capabilities, "断开隧道")
+		capabilities = append(capabilities, "断开连接")
 	}
 	return strings.Join(capabilities, "、")
+}
+
+func connectionModeLabel(value model.ConnectionProfile) string {
+	if value.UsesIsolatedTunnel() {
+		return "隔离隧道 + SSH"
+	}
+	return "仅 SSH"
 }
 
 func exampleProfileID(profiles []model.ConnectionProfile) string {

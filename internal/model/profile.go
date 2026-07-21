@@ -9,7 +9,16 @@ import (
 
 type VPNType string
 
+type ConnectionMode string
+
+type SSHAuthMethod string
+
 const (
+	ConnectionModeIsolatedTunnel ConnectionMode = "isolated_tunnel"
+	ConnectionModeDirectSSH      ConnectionMode = "direct_ssh"
+	SSHAuthPassword              SSHAuthMethod  = "password"
+	SSHAuthPrivateKey            SSHAuthMethod  = "private_key"
+
 	VPNTypeL2TPPSK   VPNType = "l2tp_psk"
 	VPNTypeSoftEther VPNType = "softether"
 	VPNTypePPTP      VPNType = "pptp"
@@ -18,14 +27,15 @@ const (
 )
 
 type ConnectionProfile struct {
-	ID          string    `json:"id"`
-	DisplayName string    `json:"display_name"`
-	Group       string    `json:"group,omitempty"`
-	VPN         VPNConfig `json:"vpn"`
-	SSH         SSHConfig `json:"ssh"`
-	MCPPolicy   MCPPolicy `json:"mcp_policy"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID             string         `json:"id"`
+	DisplayName    string         `json:"display_name"`
+	Group          string         `json:"group,omitempty"`
+	ConnectionMode ConnectionMode `json:"connection_mode,omitempty"`
+	VPN            VPNConfig      `json:"vpn"`
+	SSH            SSHConfig      `json:"ssh"`
+	MCPPolicy      MCPPolicy      `json:"mcp_policy"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
 type VPNConfig struct {
@@ -41,11 +51,12 @@ type VPNConfig struct {
 }
 
 type SSHConfig struct {
-	ServerAddress string `json:"server_address"`
-	Port          uint16 `json:"port"`
-	Username      string `json:"username"`
-	CredentialRef string `json:"credential_ref"`
-	HostKey       string `json:"host_key,omitempty"`
+	ServerAddress string        `json:"server_address"`
+	Port          uint16        `json:"port"`
+	Username      string        `json:"username"`
+	AuthMethod    SSHAuthMethod `json:"auth_method,omitempty"`
+	CredentialRef string        `json:"credential_ref"`
+	HostKey       string        `json:"host_key,omitempty"`
 }
 
 type MCPPolicy struct {
@@ -59,20 +70,26 @@ func (p ConnectionProfile) Validate() error {
 	if strings.TrimSpace(p.DisplayName) == "" || len([]rune(p.DisplayName)) > 64 {
 		return NewAppError("PROFILE_INVALID", "连接名称必须为 1-64 个字符", "profile", false)
 	}
-	if strings.TrimSpace(p.VPN.ConnectionName) == "" || len([]rune(p.VPN.ConnectionName)) > 64 {
-		return NewAppError("PROFILE_INVALID", "VPN 连接名称必须为 1-64 个字符", "profile", false)
+	mode := p.EffectiveConnectionMode()
+	if mode != ConnectionModeIsolatedTunnel && mode != ConnectionModeDirectSSH {
+		return NewAppError("PROFILE_INVALID", "连接方式无效", "profile", false)
 	}
-	if !validHost(p.VPN.ServerAddress) {
-		return NewAppError("PROFILE_INVALID", "VPN 服务器名称或地址无效", "profile", false)
-	}
-	if p.VPN.Type != VPNTypeSoftEther && p.VPN.Type != VPNTypeL2TPPSK {
-		return NewAppError("PROFILE_INVALID", "仅支持 SoftEther 原生隔离隧道", "profile", false)
-	}
-	if strings.TrimSpace(p.VPN.Username) == "" {
-		return NewAppError("PROFILE_INVALID", "隔离隧道用户名不能为空", "profile", false)
-	}
-	if !p.VPN.SplitTunnel {
-		return NewAppError("PROFILE_INVALID", "必须启用仅限目标连接的隔离传输", "profile", false)
+	if mode == ConnectionModeIsolatedTunnel {
+		if strings.TrimSpace(p.VPN.ConnectionName) == "" || len([]rune(p.VPN.ConnectionName)) > 64 {
+			return NewAppError("PROFILE_INVALID", "隔离隧道连接名称必须为 1-64 个字符", "profile", false)
+		}
+		if !validHost(p.VPN.ServerAddress) {
+			return NewAppError("PROFILE_INVALID", "隔离隧道服务器名称或地址无效", "profile", false)
+		}
+		if p.VPN.Type != VPNTypeSoftEther && p.VPN.Type != VPNTypeL2TPPSK {
+			return NewAppError("PROFILE_INVALID", "仅支持 SoftEther 原生隔离隧道", "profile", false)
+		}
+		if strings.TrimSpace(p.VPN.Username) == "" {
+			return NewAppError("PROFILE_INVALID", "隔离隧道用户名不能为空", "profile", false)
+		}
+		if !p.VPN.SplitTunnel {
+			return NewAppError("PROFILE_INVALID", "必须启用仅限目标连接的隔离传输", "profile", false)
+		}
 	}
 	if !validHost(p.SSH.ServerAddress) {
 		return NewAppError("PROFILE_INVALID", "SSH 服务器地址无效", "profile", false)
@@ -83,7 +100,32 @@ func (p ConnectionProfile) Validate() error {
 	if strings.TrimSpace(p.SSH.Username) == "" {
 		return NewAppError("PROFILE_INVALID", "SSH 用户名不能为空", "profile", false)
 	}
+	authMethod := p.SSH.EffectiveAuthMethod()
+	if authMethod != SSHAuthPassword && authMethod != SSHAuthPrivateKey {
+		return NewAppError("PROFILE_INVALID", "SSH 认证方式无效", "profile", false)
+	}
 	return nil
+}
+
+// EffectiveAuthMethod 为旧配置提供兼容默认值；历史配置只支持密码认证。
+func (c SSHConfig) EffectiveAuthMethod() SSHAuthMethod {
+	if c.AuthMethod == "" {
+		return SSHAuthPassword
+	}
+	return c.AuthMethod
+}
+
+// EffectiveConnectionMode 为旧配置提供兼容默认值；历史配置没有 connection_mode 字段。
+func (p ConnectionProfile) EffectiveConnectionMode() ConnectionMode {
+	if p.ConnectionMode == "" {
+		return ConnectionModeIsolatedTunnel
+	}
+	return p.ConnectionMode
+}
+
+func (p ConnectionProfile) UsesIsolatedTunnel() bool {
+	// 只有明确选择 direct_ssh 才绕过隧道，未知值必须按更保守的隧道路径处理并由 Validate 拒绝。
+	return p.EffectiveConnectionMode() != ConnectionModeDirectSSH
 }
 
 func validHost(value string) bool {
@@ -113,5 +155,11 @@ func VPNPasswordKey(profileID string) string {
 }
 func SSHPasswordKey(profileID string) string {
 	return fmt.Sprintf("LabRemote/%s/ssh-password", profileID)
+}
+func SSHPrivateKeyPathKey(profileID string) string {
+	return fmt.Sprintf("LabRemote/%s/ssh-private-key-path", profileID)
+}
+func SSHPrivateKeyPassphraseKey(profileID string) string {
+	return fmt.Sprintf("LabRemote/%s/ssh-private-key-passphrase", profileID)
 }
 func MCPTokenKey() string { return "LabRemote/global/mcp-token" }

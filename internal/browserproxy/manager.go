@@ -251,8 +251,14 @@ func reverseProxy(target *url.URL, localOrigin, cookieName string, transport htt
 		},
 		ErrorHandler: func(response http.ResponseWriter, _ *http.Request, err error) {
 			response.Header().Set("Cache-Control", "no-store")
+			response.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			response.WriteHeader(http.StatusBadGateway)
-			_, _ = fmt.Fprint(response, "LabRemote 无法通过隔离隧道访问该资源。\n"+err.Error())
+			message := "远端资源暂时不可用"
+			var appError *model.AppError
+			if errors.As(err, &appError) {
+				message = appError.Message
+			}
+			_, _ = fmt.Fprintf(response, "LabRemote 网页访问暂时不可用。\n%s\n\n请保持 LabRemote 运行，检查连接后刷新页面。", message)
 		},
 	}
 	return proxy
@@ -339,10 +345,10 @@ func normalizeTargetURL(raw string) (*url.URL, error) {
 	hostname := strings.TrimSpace(target.Hostname())
 	if ip := net.ParseIP(hostname); ip != nil {
 		if ip.To4() == nil {
-			return nil, model.NewAppError("BROWSER_TARGET_DENIED", "当前隔离隧道仅支持 IPv4 浏览目标", "browser_proxy", false)
+			return nil, model.NewAppError("BROWSER_TARGET_DENIED", "当前网页访问仅支持 IPv4 浏览目标", "browser_proxy", false)
 		}
 		if ip.IsUnspecified() || ip.IsMulticast() {
-			return nil, model.NewAppError("BROWSER_TARGET_DENIED", "该浏览目标地址不允许通过隔离隧道访问", "browser_proxy", false)
+			return nil, model.NewAppError("BROWSER_TARGET_DENIED", "该浏览目标地址不允许通过 SSH 转发访问", "browser_proxy", false)
 		}
 	}
 	port := target.Port()

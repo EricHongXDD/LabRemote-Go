@@ -34,7 +34,7 @@ func SanitizeDetails(details map[string]any) map[string]any {
 	clean := make(map[string]any, len(details))
 	for key, value := range details {
 		switch key {
-		case "password", "psk", "pre_shared_key", "authorization", "token", "secret":
+		case "password", "passphrase", "private_key", "private_key_path", "psk", "pre_shared_key", "authorization", "token", "secret":
 			clean[key] = "[REDACTED]"
 		default:
 			clean[key] = value

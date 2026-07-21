@@ -31,10 +31,11 @@ type profileInput struct {
 }
 
 type profileSummary struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	VPNStatus string `json:"vpn_status"`
-	SSHStatus string `json:"ssh_status"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	ConnectionMode string `json:"connection_mode"`
+	VPNStatus      string `json:"vpn_status"`
+	SSHStatus      string `json:"ssh_status"`
 }
 
 type profilesOutput struct {
@@ -43,6 +44,7 @@ type profilesOutput struct {
 
 type statusOutput struct {
 	ProfileID       string `json:"profile_id"`
+	ConnectionMode  string `json:"connection_mode"`
 	VPNStatus       string `json:"vpn_status"`
 	RouteReady      bool   `json:"route_ready"`
 	SSHConnected    bool   `json:"ssh_connected"`
@@ -111,9 +113,9 @@ type sessionCloseInput struct {
 
 func addTools(server *mcp.Server, controller *Controller) {
 	mcp.AddTool(server, &mcp.Tool{Name: "profiles_list", Description: "列出明确授权给 MCP 使用的 LabRemote 连接配置"}, controller.profilesList)
-	mcp.AddTool(server, &mcp.Tool{Name: "connection_status", Description: "查询一个已授权配置的进程内隔离隧道、SSH 和活动会话状态"}, controller.connectionStatus)
-	mcp.AddTool(server, &mcp.Tool{Name: "vpn_connect", Description: "兼容名称：使用 Windows 凭据库中的秘密建立进程内 SoftEther 隧道和 SSH 连接"}, controller.vpnConnect)
-	mcp.AddTool(server, &mcp.Tool{Name: "vpn_disconnect", Description: "兼容名称：断开进程内隔离隧道；图形终端存在时始终拒绝"}, controller.vpnDisconnect)
+	mcp.AddTool(server, &mcp.Tool{Name: "connection_status", Description: "查询一个已授权配置的连接方式、隔离隧道、SSH 和活动会话状态"}, controller.connectionStatus)
+	mcp.AddTool(server, &mcp.Tool{Name: "vpn_connect", Description: "兼容名称：按配置建立隔离隧道加 SSH，或仅建立直接 SSH 连接"}, controller.vpnConnect)
+	mcp.AddTool(server, &mcp.Tool{Name: "vpn_disconnect", Description: "兼容名称：断开 SSH 与可选隔离隧道；图形终端存在时始终拒绝"}, controller.vpnDisconnect)
 	mcp.AddTool(server, &mcp.Tool{Name: "ssh_exec", Description: "在已授权的 SSH 服务器执行一条非交互命令"}, controller.sshExec)
 	mcp.AddTool(server, &mcp.Tool{Name: "ssh_session_open", Description: "打开 MCP 专属的交互式 SSH PTY 会话"}, controller.sessionOpen)
 	mcp.AddTool(server, &mcp.Tool{Name: "ssh_session_write", Description: "向 MCP 交互会话写入 Base64 数据"}, controller.sessionWrite)
@@ -140,14 +142,14 @@ func (c *Controller) profilesList(ctx context.Context, _ *mcp.CallToolRequest, _
 	for _, value := range values {
 		status, statusErr := c.core.ConnectionStatus(ctx, value.ID)
 		if statusErr != nil {
-			output.Profiles = append(output.Profiles, profileSummary{ID: value.ID, Name: value.DisplayName, VPNStatus: "unknown", SSHStatus: "unknown"})
+			output.Profiles = append(output.Profiles, profileSummary{ID: value.ID, Name: value.DisplayName, ConnectionMode: string(value.EffectiveConnectionMode()), VPNStatus: "unknown", SSHStatus: "unknown"})
 			continue
 		}
 		sshStatus := "disconnected"
 		if status.SSHConnected {
 			sshStatus = "connected"
 		}
-		output.Profiles = append(output.Profiles, profileSummary{ID: value.ID, Name: value.DisplayName, VPNStatus: string(status.VPN.State), SSHStatus: sshStatus})
+		output.Profiles = append(output.Profiles, profileSummary{ID: value.ID, Name: value.DisplayName, ConnectionMode: string(value.EffectiveConnectionMode()), VPNStatus: string(status.VPN.State), SSHStatus: sshStatus})
 	}
 	return result(output)
 }
@@ -161,7 +163,7 @@ func (c *Controller) connectionStatus(ctx context.Context, _ *mcp.CallToolReques
 		return toolError[statusOutput](err)
 	}
 	return result(statusOutput{
-		ProfileID: status.ProfileID, VPNStatus: string(status.VPN.State), RouteReady: status.VPN.RouteReady,
+		ProfileID: status.ProfileID, ConnectionMode: string(status.ConnectionMode), VPNStatus: string(status.VPN.State), RouteReady: status.VPN.RouteReady,
 		SSHConnected: status.SSHConnected, UISessions: status.UISessions, MCPSessions: status.MCPSessions,
 		ActiveCommands: status.ActiveCommands, ActiveTransfers: status.ActiveTransfers,
 	})

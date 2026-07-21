@@ -28,6 +28,7 @@ type profileRuntime struct {
 }
 
 type Dialer interface {
+	Connect(ctx context.Context, profileID string) (model.VPNStatus, error)
 	DialContext(ctx context.Context, profileID, network, address string) (net.Conn, error)
 }
 
@@ -94,11 +95,13 @@ func (m *Manager) Connect(ctx context.Context, profileID string) error {
 	if err != nil {
 		return err
 	}
-	password, err := m.secrets.Get(ctx, model.SSHPasswordKey(profileID))
-	if err != nil {
-		return model.NewAppError("SECRET_NOT_FOUND", "未找到 SSH 密码", "ssh_auth", false)
+	if _, err := m.dialer.Connect(ctx, profileID); err != nil {
+		return err
 	}
-	defer secrets.Zero(password)
+	authMethods, err := m.authenticationMethods(ctx, value)
+	if err != nil {
+		return err
+	}
 	address := net.JoinHostPort(strings.Trim(value.SSH.ServerAddress, "[]"), strconv.Itoa(int(value.SSH.Port)))
 	connection, err := m.dialer.DialContext(ctx, profileID, "tcp", address)
 	if err != nil {
@@ -106,7 +109,7 @@ func (m *Manager) Connect(ctx context.Context, profileID string) error {
 		if errors.As(err, &appError) {
 			return appError
 		}
-		return model.NewAppError("SSH_PORT_UNREACHABLE", "隔离隧道已建立，但 SSH 服务器端口不可达", "ssh_probe", true).WithDetails(map[string]any{"address": address})
+		return model.NewAppError("SSH_PORT_UNREACHABLE", "无法访问 SSH 服务器端口", "ssh_probe", true).WithDetails(map[string]any{"address": address})
 	}
 	defer func() {
 		if runtime.client == nil {
@@ -116,7 +119,7 @@ func (m *Manager) Connect(ctx context.Context, profileID string) error {
 	_ = connection.SetDeadline(time.Now().Add(15 * time.Second))
 	config := &ssh.ClientConfig{
 		User:            value.SSH.Username,
-		Auth:            []ssh.AuthMethod{ssh.Password(string(password))},
+		Auth:            authMethods,
 		HostKeyCallback: m.knownHosts.Callback(profileID),
 		Timeout:         15 * time.Second,
 	}
@@ -126,12 +129,40 @@ func (m *Manager) Connect(ctx context.Context, profileID string) error {
 		if errors.As(err, &appError) {
 			return appError
 		}
-		return model.NewAppError("SSH_AUTH_FAILED", "SSH 握手或密码认证失败", "ssh_auth", false)
+		return model.NewAppError("SSH_AUTH_FAILED", "SSH 握手或身份认证失败", "ssh_auth", false)
 	}
 	_ = connection.SetDeadline(time.Time{})
-	runtime.client = ssh.NewClient(clientConnection, channels, requests)
+	client := ssh.NewClient(clientConnection, channels, requests)
+	runtime.client = client
+	go m.watchClient(profileID, runtime, client)
 	m.events.Emit("ssh:status", map[string]any{"profile_id": profileID, "connected": true})
 	return nil
+}
+
+func (m *Manager) authenticationMethods(ctx context.Context, value model.ConnectionProfile) ([]ssh.AuthMethod, error) {
+	if value.SSH.EffectiveAuthMethod() == model.SSHAuthPassword {
+		password, err := m.secrets.Get(ctx, model.SSHPasswordKey(value.ID))
+		if err != nil {
+			return nil, model.NewAppError("SECRET_NOT_FOUND", "未找到 SSH 密码", "ssh_auth", false)
+		}
+		defer secrets.Zero(password)
+		return []ssh.AuthMethod{ssh.Password(string(password))}, nil
+	}
+	path, err := m.secrets.Get(ctx, model.SSHPrivateKeyPathKey(value.ID))
+	if err != nil {
+		return nil, model.NewAppError("SSH_PRIVATE_KEY_NOT_FOUND", "未找到已保存的 SSH 私钥文件", "ssh_auth", false)
+	}
+	defer secrets.Zero(path)
+	passphrase, err := m.secrets.Get(ctx, model.SSHPrivateKeyPassphraseKey(value.ID))
+	if err != nil && !errors.Is(err, secrets.ErrNotFound) {
+		return nil, model.NewAppError("SECRET_NOT_FOUND", "无法读取 SSH 私钥口令", "ssh_auth", false)
+	}
+	defer secrets.Zero(passphrase)
+	signer, _, err := LoadPrivateKeyFile(string(path), passphrase)
+	if err != nil {
+		return nil, err
+	}
+	return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
 }
 
 func (m *Manager) DialWebContext(ctx context.Context, profileID, network, address string) (net.Conn, error) {
@@ -149,12 +180,34 @@ func (m *Manager) DialWebContext(ctx context.Context, profileID, network, addres
 		return nil, model.NewAppError("SSH_NOT_CONNECTED", "SSH 跳转连接尚未建立", "browser_proxy", true)
 	}
 	connection, err := client.DialContext(ctx, "tcp", address)
+	if err == nil {
+		return connection, nil
+	}
+	if _, _, keepaliveErr := client.SendRequest("keepalive@openssh.com", false, nil); keepaliveErr == nil {
+		return nil, browserTargetError(address, err)
+	}
+	// SSH 传输已失效时只淘汰本次使用的旧客户端，避免并发请求关闭刚恢复的新连接。
+	m.invalidateClientIf(profileID, client)
+	if reconnectErr := m.Connect(ctx, profileID); reconnectErr != nil {
+		return nil, model.NewAppError("BROWSER_RECONNECT_FAILED", "网页访问连接已断开，自动恢复失败", "browser_proxy", true).WithDetails(map[string]any{"reason": reconnectErr.Error()})
+	}
+	runtime.mu.Lock()
+	client = runtime.client
+	runtime.mu.Unlock()
+	if client == nil {
+		return nil, model.NewAppError("BROWSER_RECONNECT_FAILED", "网页访问连接已断开，自动恢复失败", "browser_proxy", true)
+	}
+	connection, err = client.DialContext(ctx, "tcp", address)
 	if err != nil {
-		return nil, model.NewAppError("BROWSER_TARGET_UNREACHABLE", "SSH 跳转服务器无法访问浏览目标", "browser_proxy", true).WithDetails(map[string]any{
-			"address": address, "reason": err.Error(),
-		})
+		return nil, browserTargetError(address, err)
 	}
 	return connection, nil
+}
+
+func browserTargetError(address string, err error) error {
+	return model.NewAppError("BROWSER_TARGET_UNREACHABLE", "SSH 跳转服务器无法访问浏览目标", "browser_proxy", true).WithDetails(map[string]any{
+		"address": address, "reason": err.Error(),
+	})
 }
 
 func (m *Manager) AcceptHostKey(profileID, fingerprint string) error {
@@ -502,5 +555,30 @@ func (m *Manager) invalidateClient(profileID string) {
 	if client != nil {
 		_ = client.Close()
 	}
+	m.events.Emit("ssh:status", map[string]any{"profile_id": profileID, "connected": false})
+}
+
+func (m *Manager) invalidateClientIf(profileID string, expected *ssh.Client) {
+	runtime := m.runtime(profileID)
+	runtime.mu.Lock()
+	if runtime.client != expected {
+		runtime.mu.Unlock()
+		return
+	}
+	runtime.client = nil
+	runtime.mu.Unlock()
+	_ = expected.Close()
+	m.events.Emit("ssh:status", map[string]any{"profile_id": profileID, "connected": false})
+}
+
+func (m *Manager) watchClient(profileID string, runtime *profileRuntime, client *ssh.Client) {
+	_ = client.Wait()
+	runtime.mu.Lock()
+	if runtime.client != client {
+		runtime.mu.Unlock()
+		return
+	}
+	runtime.client = nil
+	runtime.mu.Unlock()
 	m.events.Emit("ssh:status", map[string]any{"profile_id": profileID, "connected": false})
 }

@@ -22,6 +22,8 @@ import type {
   UploadRequest,
   UploadSelection,
 } from '../types'
+import {usesIsolatedTunnel} from '../lib/profile'
+import type {ConfirmOptions} from './ConfirmDialog'
 
 export type TransferMode = 'upload' | 'download'
 
@@ -34,6 +36,7 @@ type Props = {
   onStartDownload: (request: DownloadRequest) => Promise<DownloadProgress>
   onListRemote: (directory: string) => Promise<RemoteDirectory>
   onNotice: (message: string) => void
+  onConfirm: (options: ConfirmOptions) => Promise<boolean>
 }
 
 const uploadActiveStates = new Set(['queued', 'scanning', 'uploading'])
@@ -71,6 +74,7 @@ export default function TransferDialog({
   onStartDownload,
   onListRemote,
   onNotice,
+  onConfirm,
 }: Props) {
   const [mode, setMode] = useState<TransferMode>(initialMode)
   const [selections, setSelections] = useState<UploadSelection[]>([])
@@ -286,7 +290,12 @@ export default function TransferDialog({
   }
 
   const cancel = async () => {
-    if (!progress || !window.confirm('确定取消当前传输吗？已完成的安全分片会保留，稍后可继续。')) return
+    if (!progress || !await onConfirm({
+      title: '取消当前文件传输',
+      message: '已完成的安全分片会保留，稍后可以继续传输。',
+      confirmLabel: '取消传输',
+      danger: true,
+    })) return
     try {
       if (mode === 'upload') await CancelUpload(progress.job_id)
       else await CancelDownload(progress.job_id)
@@ -297,7 +306,12 @@ export default function TransferDialog({
 
   const close = async () => {
     if (active && progress) {
-      if (!window.confirm('文件传输仍在进行。是否取消传输并关闭窗口？')) return
+      if (!await onConfirm({
+        title: '文件传输仍在进行',
+        message: '关闭窗口将取消当前传输；已完成的安全分片会保留。',
+        confirmLabel: '取消并关闭',
+        danger: true,
+      })) return
       try {
         if (mode === 'upload') await CancelUpload(progress.job_id)
         else await CancelDownload(progress.job_id)
@@ -310,7 +324,7 @@ export default function TransferDialog({
     <div className="modal-backdrop">
       <section className="upload-dialog transfer-dialog" role="dialog" aria-modal="true" aria-label="文件传输">
         <header className="dialog-titlebar transfer-titlebar">
-          <div><span className="eyebrow">SFTP OVER ISOLATED SSH</span><h2>{profile.display_name} · 文件传输</h2></div>
+          <div><span className="eyebrow">{usesIsolatedTunnel(profile) ? 'SFTP OVER ISOLATED SSH' : 'SFTP OVER SSH'}</span><h2>{profile.display_name} · 文件传输</h2></div>
           <div className="transfer-tabs">
             <button className={mode === 'upload' ? 'active' : ''} disabled={active} onClick={() => setMode('upload')}>⇧ 上传</button>
             <button className={mode === 'download' ? 'active' : ''} disabled={active} onClick={() => setMode('download')}>⇩ 下载</button>
