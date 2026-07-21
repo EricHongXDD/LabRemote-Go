@@ -15,6 +15,6 @@
     "productName": "LabRemote",
     "productVersion": "1.0.0",
     "copyright": "Copyright © 2026 EricHongXDD",
-    "comments": "隔离隧道 + SSH 终端 + 文件传输 + 网页访问 + MCP 跨平台客户端"
+    "comments": "SSH + 可选隔离隧道 + 文件传输 + 网页访问 + MCP 跨平台客户端"
   }
 }

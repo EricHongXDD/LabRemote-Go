@@ -188,6 +188,17 @@ func (a *DesktopApp) TerminalWorkingDirectory(sessionID string) (string, error) 
 	return a.service.TerminalWorkingDirectory(a.ctx, sessionID)
 }
 
+func (a *DesktopApp) SelectSSHPrivateKey() (string, error) {
+	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:           "选择 SSH 私钥文件",
+		ShowHiddenFiles: true,
+		Filters: []runtime.FileFilter{
+			{DisplayName: "SSH 私钥", Pattern: "*.pem;*.key;id_*"},
+			{DisplayName: "所有文件", Pattern: "*"},
+		},
+	})
+}
+
 func (a *DesktopApp) SelectUploadFiles() ([]model.UploadSelection, error) {
 	paths, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
 		Title:           "选择要上传的文件",

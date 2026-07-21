@@ -29,6 +29,8 @@ export namespace app {
 	    vpn_pre_shared_key: string;
 	    vpn_password: string;
 	    ssh_password: string;
+	    ssh_private_key_path: string;
+	    ssh_private_key_passphrase: string;
 
 	    static createFrom(source: any = {}) {
 	        return new SaveProfileRequest(source);
@@ -40,6 +42,8 @@ export namespace app {
 	        this.vpn_pre_shared_key = source["vpn_pre_shared_key"];
 	        this.vpn_password = source["vpn_password"];
 	        this.ssh_password = source["ssh_password"];
+	        this.ssh_private_key_path = source["ssh_private_key_path"];
+	        this.ssh_private_key_passphrase = source["ssh_private_key_passphrase"];
 	    }
 
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -64,6 +68,8 @@ export namespace app {
 	    profile: model.ConnectionProfile;
 	    vpn_password: string;
 	    ssh_password: string;
+	    ssh_private_key_path: string;
+	    ssh_private_key_passphrase: string;
 
 	    static createFrom(source: any = {}) {
 	        return new TestConnectionRequest(source);
@@ -74,6 +80,8 @@ export namespace app {
 	        this.profile = this.convertValues(source["profile"], model.ConnectionProfile);
 	        this.vpn_password = source["vpn_password"];
 	        this.ssh_password = source["ssh_password"];
+	        this.ssh_private_key_path = source["ssh_private_key_path"];
+	        this.ssh_private_key_passphrase = source["ssh_private_key_passphrase"];
 	    }
 
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -142,6 +150,7 @@ export namespace model {
 	    server_address: string;
 	    port: number;
 	    username: string;
+	    auth_method?: string;
 	    credential_ref: string;
 	    host_key?: string;
 
@@ -154,6 +163,7 @@ export namespace model {
 	        this.server_address = source["server_address"];
 	        this.port = source["port"];
 	        this.username = source["username"];
+	        this.auth_method = source["auth_method"];
 	        this.credential_ref = source["credential_ref"];
 	        this.host_key = source["host_key"];
 	    }
@@ -190,6 +200,7 @@ export namespace model {
 	    id: string;
 	    display_name: string;
 	    group?: string;
+	    connection_mode?: string;
 	    vpn: VPNConfig;
 	    ssh: SSHConfig;
 	    mcp_policy: MCPPolicy;
@@ -207,6 +218,7 @@ export namespace model {
 	        this.id = source["id"];
 	        this.display_name = source["display_name"];
 	        this.group = source["group"];
+	        this.connection_mode = source["connection_mode"];
 	        this.vpn = this.convertValues(source["vpn"], VPNConfig);
 	        this.ssh = this.convertValues(source["ssh"], SSHConfig);
 	        this.mcp_policy = this.convertValues(source["mcp_policy"], MCPPolicy);
@@ -279,6 +291,7 @@ export namespace model {
 	}
 	export class ConnectionStatus {
 	    profile_id: string;
+	    connection_mode: string;
 	    vpn: VPNStatus;
 	    ssh_connected: boolean;
 	    ui_sessions: number;
@@ -294,6 +307,7 @@ export namespace model {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.profile_id = source["profile_id"];
+	        this.connection_mode = source["connection_mode"];
 	        this.vpn = this.convertValues(source["vpn"], VPNStatus);
 	        this.ssh_connected = source["ssh_connected"];
 	        this.ui_sessions = source["ui_sessions"];

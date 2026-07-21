@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-var sensitiveAssignment = regexp.MustCompile(`(?i)(password|passwd|psk|pre[_-]?shared[_-]?key|authorization|bearer|token|secret)(\s*[:=]\s*)([^\s,;]+)`)
+var sensitiveAssignment = regexp.MustCompile(`(?i)(password|passwd|passphrase|private[_-]?key(?:[_-]?path)?|psk|pre[_-]?shared[_-]?key|authorization|bearer|token|secret)(\s*[:=]\s*)([^\s,;]+)`)
 
 func Redact(value string) string {
 	value = sensitiveAssignment.ReplaceAllString(value, "$1$2[REDACTED]")

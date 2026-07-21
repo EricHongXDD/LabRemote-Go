@@ -53,9 +53,31 @@ func (m *IsolatedManager) EnsureProfile(_ context.Context, value model.Connectio
 }
 
 func (m *IsolatedManager) Connect(ctx context.Context, profileID string) (model.VPNStatus, error) {
+	value, err := m.repository.Get(ctx, profileID)
+	if err != nil {
+		m.states.Set(profileID, model.VPNFailed, "PROFILE_NOT_FOUND")
+		return model.VPNStatus{}, err
+	}
+	if err := value.Validate(); err != nil {
+		m.states.Set(profileID, model.VPNFailed, "PROFILE_INVALID")
+		return model.VPNStatus{}, err
+	}
 	runtime := m.runtime(profileID)
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
+	if !value.UsesIsolatedTunnel() {
+		if runtime.link != nil {
+			_ = runtime.link.Close()
+			runtime.link = nil
+		}
+		return m.states.Update(profileID, func(status *model.VPNStatus) {
+			status.State = model.VPNNotRequired
+			status.ErrorCode = ""
+			status.IPAddress = ""
+			status.Interface = "直接 SSH 网络"
+			status.RouteReady = true
+		}), nil
+	}
 	if runtime.link != nil {
 		select {
 		case <-runtime.link.Done():
@@ -65,11 +87,6 @@ func (m *IsolatedManager) Connect(ctx context.Context, profileID string) (model.
 		}
 	}
 	m.states.Set(profileID, model.VPNPreparing, "")
-	value, err := m.repository.Get(ctx, profileID)
-	if err != nil {
-		m.states.Set(profileID, model.VPNFailed, "PROFILE_NOT_FOUND")
-		return model.VPNStatus{}, err
-	}
 	password, err := m.secrets.Get(ctx, model.VPNPasswordKey(profileID))
 	if err != nil {
 		m.states.Set(profileID, model.VPNFailed, "SECRET_NOT_FOUND")
@@ -107,8 +124,23 @@ func (m *IsolatedManager) Connect(ctx context.Context, profileID string) (model.
 	return status, nil
 }
 
-func (m *IsolatedManager) Status(_ context.Context, profileID string) (model.VPNStatus, error) {
-	return m.states.Get(profileID), nil
+func (m *IsolatedManager) Status(ctx context.Context, profileID string) (model.VPNStatus, error) {
+	value, err := m.repository.Get(ctx, profileID)
+	if err != nil {
+		return model.VPNStatus{}, err
+	}
+	if err := value.Validate(); err != nil {
+		return model.VPNStatus{}, err
+	}
+	status := m.states.Get(profileID)
+	if !value.UsesIsolatedTunnel() {
+		status.State = model.VPNNotRequired
+		status.ErrorCode = ""
+		status.IPAddress = ""
+		status.Interface = "直接 SSH 网络"
+		status.RouteReady = true
+	}
+	return status, nil
 }
 
 func (m *IsolatedManager) DialContext(ctx context.Context, profileID, network, address string) (net.Conn, error) {
@@ -116,9 +148,19 @@ func (m *IsolatedManager) DialContext(ctx context.Context, profileID, network, a
 	if err != nil {
 		return nil, err
 	}
+	if err := value.Validate(); err != nil {
+		return nil, err
+	}
 	expected := net.JoinHostPort(strings.Trim(value.SSH.ServerAddress, "[]"), strconv.Itoa(int(value.SSH.Port)))
 	if address != expected || (network != "tcp" && network != "tcp4") {
-		return nil, model.NewAppError("TUNNEL_TARGET_DENIED", "隔离隧道仅允许访问配置的 SSH 目标", "tunnel_policy", false)
+		return nil, model.NewAppError("TUNNEL_TARGET_DENIED", "连接传输仅允许访问配置的 SSH 目标", "connection_policy", false)
+	}
+	if !value.UsesIsolatedTunnel() {
+		connection, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, network, address)
+		if err != nil {
+			return nil, model.NewAppError("SSH_PORT_UNREACHABLE", "无法直接访问 SSH 服务器端口", "ssh_probe", true).WithDetails(map[string]any{"address": address, "reason": err.Error()})
+		}
+		return connection, nil
 	}
 	runtime := m.runtime(profileID)
 	runtime.mu.Lock()
@@ -134,12 +176,29 @@ func (m *IsolatedManager) DialContext(ctx context.Context, profileID, network, a
 	return connection, nil
 }
 
-func (m *IsolatedManager) Disconnect(_ context.Context, profileID string, _ bool) error {
+func (m *IsolatedManager) Disconnect(ctx context.Context, profileID string, _ bool) error {
+	value, err := m.repository.Get(ctx, profileID)
+	if err != nil {
+		return err
+	}
 	runtime := m.runtime(profileID)
 	runtime.mu.Lock()
 	link := runtime.link
 	runtime.link = nil
 	runtime.mu.Unlock()
+	if !value.UsesIsolatedTunnel() {
+		if link != nil {
+			_ = link.Close()
+		}
+		m.states.Update(profileID, func(status *model.VPNStatus) {
+			status.State = model.VPNNotRequired
+			status.ErrorCode = ""
+			status.IPAddress = ""
+			status.Interface = "直接 SSH 网络"
+			status.RouteReady = true
+		})
+		return nil
+	}
 	if link == nil {
 		m.states.Set(profileID, model.VPNDisconnected, "")
 		return nil
@@ -157,15 +216,18 @@ func (m *IsolatedManager) Disconnect(_ context.Context, profileID string, _ bool
 }
 
 func (m *IsolatedManager) AcceptCertificate(ctx context.Context, profileID, fingerprint string) error {
+	value, err := m.repository.Get(ctx, profileID)
+	if err != nil {
+		return err
+	}
+	if !value.UsesIsolatedTunnel() {
+		return model.NewAppError("TUNNEL_NOT_REQUIRED", "仅 SSH 连接不使用隔离隧道证书", "tunnel_certificate", false)
+	}
 	m.mu.Lock()
 	pending := m.pending[profileID]
 	m.mu.Unlock()
 	if pending == "" || pending != fingerprint {
 		return model.NewAppError("TUNNEL_CERT_UNKNOWN", "没有可确认的隧道证书，或指纹已变化", "tunnel_certificate", false)
-	}
-	value, err := m.repository.Get(ctx, profileID)
-	if err != nil {
-		return err
 	}
 	value.VPN.ServerCertificate = fingerprint
 	value.UpdatedAt = time.Now()

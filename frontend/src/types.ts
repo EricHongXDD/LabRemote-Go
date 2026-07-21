@@ -5,10 +5,14 @@ export type MCPPolicy = {
   allow_disconnect: boolean
 }
 
+export type ConnectionMode = 'isolated_tunnel' | 'direct_ssh'
+export type SSHAuthMethod = 'password' | 'private_key'
+
 export type ConnectionProfile = {
   id: string
   display_name: string
   group?: string
+  connection_mode?: ConnectionMode
   vpn: {
     connection_name: string
     server_address: string
@@ -24,6 +28,7 @@ export type ConnectionProfile = {
     server_address: string
     port: number
     username: string
+    auth_method?: SSHAuthMethod
     credential_ref: string
     host_key?: string
   }
@@ -37,12 +42,16 @@ export type SaveProfileRequest = {
   vpn_pre_shared_key: string
   vpn_password: string
   ssh_password: string
+  ssh_private_key_path: string
+  ssh_private_key_passphrase: string
 }
 
 export type TestConnectionRequest = {
   profile: ConnectionProfile
   vpn_password: string
   ssh_password: string
+  ssh_private_key_path: string
+  ssh_private_key_passphrase: string
 }
 
 export type ConnectionTestResult = {

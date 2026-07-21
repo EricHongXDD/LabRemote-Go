@@ -1,6 +1,10 @@
 # LabRemote VPN + SSH + MCP 客户端开发手册
 
 > 2026-07-18 架构更新：本文后续关于 Windows RAS、L2TP/IPsec、VPN Profile 和系统 `/32` 路由的设计已被进程内 SoftEther 原生传输取代，仅保留为历史设计记录。旧 RAS 源码由 `legacy_ras` 构建标签隔离，不进入默认测试、构建或发布产物。当前实现以 `README.md`、`internal/softether` 和 `internal/vpn/isolated_manager.go` 为准：应用不连接或修改 Windows VPN，不创建系统网卡或路由，SSH 通过用户态 TCP/IP 栈获得专用 `net.Conn`。
+>
+> 2026-07-21 连接模式更新：`ConnectionProfile.connection_mode` 支持 `isolated_tunnel` 与 `direct_ssh`。缺少字段的旧配置默认按 `isolated_tunnel` 读取；`direct_ssh` 跳过 SoftEther，仅用受目标限制的系统 TCP 拨号连接配置的 SSH 地址。终端、SFTP、MCP 共用该 SSH 控制连接，网页访问在两种模式下都通过 SSH `direct-tcpip`，所以 `127.0.0.1:1294` 等目标表示远端 SSH 主机自身端口，而不是本机端口。
+>
+> 2026-07-21 SSH 与网页恢复更新：SSH 支持 `password` 与 `private_key` 认证。私钥文件保留在用户原路径，路径及可选口令存入系统安全凭据库；网页代理检测到意外断线后会恢复可选隧道和 SSH 并重试一次。所有确认操作使用应用内模态弹窗，不再调用 WebView `window.confirm`。
 
 > 2026-07-19 平台更新：当前实现已提供 Windows amd64、Linux amd64 与 macOS Universal 发行包。Windows 使用 Credential Manager，macOS 使用 Keychain，Linux 使用 Secret Service。本文后续标为第一版范围的 Windows RAS 与单平台设计仍作为历史记录保留。
 
@@ -14,7 +18,7 @@
 
 ## 1. 项目目标
 
-开发一款名为 `LabRemote` 的 Windows 桌面工具，把实验室 VPN 连接、SSH 登录、交互式终端和 MCP 服务整合到一个程序中。
+开发一款名为 `LabRemote` 的跨平台桌面工具，把可选实验室隔离隧道、直接 SSH 登录、交互式终端、文件与网页访问和 MCP 服务整合到一个程序中。
 
 用户只需要维护以下信息：
 
@@ -61,7 +65,7 @@
 - L2TP/IPsec 预共享密钥模式；
 - VPN 自动连接、状态检测、超时和断开；
 - 分流路由，不能把普通互联网流量全部导入实验室 VPN；
-- SSH 密码认证；
+- SSH 密码与私钥认证；
 - SSH 主机指纹确认和固定；
 - 多标签交互式终端；
 - ANSI 色彩、中文、窗口尺寸变化、复制和粘贴；
@@ -73,7 +77,7 @@
 
 ### 2.2 推荐实现
 
-- SSH 密钥认证；
+- SSH Agent 与硬件安全密钥认证；
 - SFTP 文件管理；
 - 端口转发；
 - 命令片段；
@@ -525,7 +529,7 @@ stateDiagram-v2
   -> 获取 VPN 地址和接口
   -> TCP 探测 SSH 地址:端口
   -> SSH 握手与主机指纹校验
-  -> 密码认证
+  -> 密码或私钥认证
   -> 创建 PTY 和 Shell
   -> 向 xterm.js 推送输出
 ```
@@ -1052,8 +1056,8 @@ MCP_BUSY
 
 - 默认启用主机指纹固定；
 - 禁止 `ssh.InsecureIgnoreHostKey()`；
-- 推荐后续增加 SSH 私钥和 ssh-agent；
-- 密码认证只在用户要求的第一版保留；
+- 私钥路径及可选口令保存在 Windows 凭据管理器，配置 JSON 不记录私钥内容或路径；
+- 推荐后续增加 ssh-agent 与硬件安全密钥支持；
 - 连接超时、握手超时、命令超时分别控制；
 - TCP keepalive 与 SSH keepalive 设置合理间隔。
 

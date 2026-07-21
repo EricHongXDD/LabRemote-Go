@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useState} from 'react'
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
 import {
   AcceptHostKey,
   AcceptTunnelCertificate,
@@ -19,6 +19,7 @@ import {
 	OpenBrowserResource,
   RegenerateMCPToken,
   SaveProfile,
+  SelectSSHPrivateKey,
   StartUpload,
   StartDownload,
   StartMCP,
@@ -30,18 +31,22 @@ import {EventsOn} from '../wailsjs/runtime/runtime'
 import {app as generatedApp} from '../wailsjs/go/models'
 import ProfileDialog from './components/ProfileDialog'
 import BrowserDialog from './components/BrowserDialog'
+import ConfirmDialog from './components/ConfirmDialog'
+import type {ConfirmOptions} from './components/ConfirmDialog'
 import TerminalView from './components/TerminalView'
 import TransferDialog from './components/TransferDialog'
 import type {TransferMode} from './components/TransferDialog'
 import {parseAppError} from './lib/errors'
+import {usesIsolatedTunnel} from './lib/profile'
 import type {ConnectionProfile, ConnectionTestResult, DownloadProgress, DownloadRequest, RemoteDirectory, SaveProfileRequest, TerminalTab, TestConnectionRequest, UploadProgress, UploadRequest} from './types'
 
 type MCPState = {enabled: boolean; address: string; port: number}
-type StatusValue = {vpn?: {state: string; route_ready: boolean; reference_num: number}; ssh_connected?: boolean; ui_sessions?: number; mcp_sessions?: number; active_transfers?: number; browser_sessions?: number}
+type StatusValue = {connection_mode?: string; vpn?: {state: string; route_ready: boolean; reference_num: number}; ssh_connected?: boolean; ui_sessions?: number; mcp_sessions?: number; active_transfers?: number; browser_sessions?: number}
 type ConnectionMenu = {profile: ConnectionProfile; x: number; y: number}
 
 const vpnStateLabels: Record<string, string> = {
   disconnected: '未连接',
+  not_required: '无需隧道',
   preparing: '正在准备',
   dialing: '正在建立隧道',
   connected: '已连接',
@@ -67,8 +72,24 @@ export default function App() {
   const [showToken, setShowToken] = useState(false)
   const [connectionMenu, setConnectionMenu] = useState<ConnectionMenu | null>(null)
   const [browserProfile, setBrowserProfile] = useState<ConnectionProfile | null>(null)
+  const [confirmation, setConfirmation] = useState<ConfirmOptions | null>(null)
+  const confirmationResolver = useRef<((accepted: boolean) => void) | null>(null)
+
+  const confirmAction = useCallback((options: ConfirmOptions) => new Promise<boolean>(resolve => {
+    confirmationResolver.current?.(false)
+    confirmationResolver.current = resolve
+    setConfirmation(options)
+  }), [])
+
+  const resolveConfirmation = useCallback((accepted: boolean) => {
+    const resolve = confirmationResolver.current
+    confirmationResolver.current = null
+    setConfirmation(null)
+    resolve?.(accepted)
+  }, [])
 
   const selected = profiles.find(value => value.id === selectedID) || null
+  const selectedUsesTunnel = selected ? usesIsolatedTunnel(selected) : true
   const vpnState = status.vpn?.state || 'disconnected'
   const vpnStateLabel = vpnStateLabels[vpnState] || vpnState
   const activeTasks = (status.active_transfers || 0) + (status.browser_sessions || 0)
@@ -128,7 +149,7 @@ export default function App() {
       await SaveProfile(generatedApp.SaveProfileRequest.createFrom(request))
       setDialogOpen(false)
       setEditing(null)
-      setNotice('连接配置已保存，敏感凭据由 Windows Credential Manager 保护')
+      setNotice('连接配置已保存，敏感凭据由系统安全存储保护')
       await refreshProfiles()
     } catch (error) {
       throw new Error(parseAppError(error).message)
@@ -149,15 +170,23 @@ export default function App() {
     } catch (error) {
       const value = parseAppError(error)
       if (value.code === 'TUNNEL_CERT_UNKNOWN' && value.details?.fingerprint) {
-		  const accepted = window.confirm(`首次连接需要确认隔离隧道服务器证书\n\n服务器：${String(value.details.address || profile.vpn.server_address)}\n指纹：${String(value.details.fingerprint)}\n\n确认信任此服务器吗？`)
-		  if (accepted) {
-		    await AcceptTunnelCertificate(profile.id, String(value.details.fingerprint))
-		    await refreshProfiles()
-		    return runWithTrustConfirmation(profile, operation)
-		  }
-		}
+		  const accepted = await confirmAction({
+          title: '确认隔离隧道服务器证书',
+          message: `服务器：${String(value.details.address || profile.vpn.server_address)}\n指纹：${String(value.details.fingerprint)}\n\n请与管理员提供的指纹核对一致后再信任。`,
+          confirmLabel: '信任并继续',
+        })
+        if (accepted) {
+          await AcceptTunnelCertificate(profile.id, String(value.details.fingerprint))
+          await refreshProfiles()
+          return runWithTrustConfirmation(profile, operation)
+        }
+      }
       if (value.code === 'SSH_HOST_KEY_UNKNOWN' && value.details?.fingerprint) {
-        const accepted = window.confirm(`首次连接需要确认主机指纹\n\n服务器：${String(value.details.address || profile.ssh.server_address)}\n类型：${String(value.details.key_type || '')}\n指纹：${String(value.details.fingerprint)}\n\n确认信任此主机吗？`)
+        const accepted = await confirmAction({
+          title: '确认 SSH 主机指纹',
+          message: `服务器：${String(value.details.address || profile.ssh.server_address)}\n类型：${String(value.details.key_type || '')}\n指纹：${String(value.details.fingerprint)}\n\n请与管理员提供的指纹核对一致后再信任。`,
+          confirmLabel: '信任并继续',
+        })
         if (accepted) {
           await AcceptHostKey(profile.id, String(value.details.fingerprint))
           return runWithTrustConfirmation(profile, operation)
@@ -231,7 +260,12 @@ export default function App() {
   }
 
   const deleteProfile = async (profile: ConnectionProfile) => {
-    if (!window.confirm(`确定删除连接“${profile.display_name}”吗？\n\n关联的 Windows 凭据也会一并删除，此操作无法撤销。`)) return
+    if (!await confirmAction({
+      title: `删除连接“${profile.display_name}”`,
+      message: '关联的系统安全凭据也会一并删除，此操作无法撤销。',
+      confirmLabel: '删除连接',
+      danger: true,
+    })) return
     try {
       await DeleteProfile(profile.id, true)
       setSelectedID('')
@@ -245,12 +279,17 @@ export default function App() {
   const disconnect = async (profile: ConnectionProfile) => {
     try {
       await DisconnectProfile(profile.id, false)
-		setNotice(`${profile.display_name} 的隔离隧道已断开`)
+        setNotice(`${profile.display_name} 的连接已断开`)
     } catch (error) {
       const value = parseAppError(error)
-      if (value.code === 'VPN_BUSY' && window.confirm(`${value.message}\n\n是否关闭全部会话并强制断开？`)) {
+      if (value.code === 'VPN_BUSY' && await confirmAction({
+        title: '连接仍在使用中',
+        message: `${value.message}\n\n是否关闭全部会话、文件传输和网页访问并强制断开？`,
+        confirmLabel: '强制断开',
+        danger: true,
+      })) {
         await DisconnectProfile(profile.id, true)
-		setNotice(`${profile.display_name} 的全部会话与隔离隧道已断开`)
+        setNotice(`${profile.display_name} 的全部会话与连接已断开`)
       } else setNotice(value.message)
     }
   }
@@ -315,7 +354,11 @@ export default function App() {
   }
 
   const exportMCPAIGuide = async () => {
-    if (!window.confirm('导出的 Markdown 将包含当前 MCP 地址和 Bearer Token，可让本机 AI 客户端直接连接并操作已授权终端。\n\n该文件等同于访问凭据，请勿上传到公开聊天、Git 或发送给无关人员。是否继续导出？')) return
+    if (!await confirmAction({
+      title: '导出 AI 终端操作手册',
+      message: '导出的 Markdown 将包含当前 MCP 地址和 Bearer Token，可让本机 AI 客户端直接连接并操作已授权终端。\n\n该文件等同于访问凭据，请勿上传到公开聊天、Git 或发送给无关人员。',
+      confirmLabel: '继续导出',
+    })) return
     try {
       const path = await ExportMCPAIGuide()
       setNotice(path ? `AI 终端操作手册已导出：${path}` : '已取消导出 AI 终端操作手册')
@@ -325,7 +368,12 @@ export default function App() {
   }
 
   const regenerateToken = async () => {
-    if (!window.confirm('重新生成令牌会立即使旧令牌失效，是否继续？')) return
+    if (!await confirmAction({
+      title: '重新生成 MCP 令牌',
+      message: '重新生成后旧令牌会立即失效，所有使用旧令牌的客户端都需要更新配置。',
+      confirmLabel: '重新生成',
+      danger: true,
+    })) return
     try {
       const token = await RegenerateMCPToken()
       setMCPToken(token)
@@ -333,11 +381,16 @@ export default function App() {
     } catch (error) { setNotice(parseAppError(error).message) }
   }
 
-  const clearSecret = async (profileID: string, kind: 'vpn_psk' | 'vpn_password' | 'ssh_password') => {
-    if (!window.confirm('清除后，下次连接前必须输入并保存新的凭据。是否继续？')) return
+  const clearSecret = async (profileID: string, kind: 'vpn_psk' | 'vpn_password' | 'ssh_password' | 'ssh_private_key') => {
+    if (!await confirmAction({
+      title: kind === 'ssh_private_key' ? '清除已保存的 SSH 私钥' : '清除已保存的密码',
+      message: '清除后，下次连接前必须重新选择或输入凭据并保存。',
+      confirmLabel: '清除凭据',
+      danger: true,
+    })) return
     try {
       await ClearSavedCredential(profileID, kind)
-      setNotice('已从 Windows Credential Manager 清除凭据')
+      setNotice('已从系统安全凭据存储清除凭据')
     } catch (error) {
       setNotice(parseAppError(error).message)
     }
@@ -378,9 +431,9 @@ export default function App() {
                 <div className="group-title"><span>⌄</span>{group}<em>{values.length}</em></div>
                 {values.map(profile => (
                   <button key={profile.id} title="双击连接，右键查看更多操作" className={`profile-row ${selectedID === profile.id ? 'selected' : ''}`} onClick={() => setSelectedID(profile.id)} onDoubleClick={() => void connect(profile)} onContextMenu={event => showConnectionMenu(event, profile)}>
-                    <span className={`server-icon ${selectedID === profile.id && vpnState === 'connected' ? 'online' : ''}`}>›_</span>
+                    <span className={`server-icon ${selectedID === profile.id && (usesIsolatedTunnel(profile) ? vpnState === 'connected' : Boolean(status.ssh_connected)) ? 'online' : ''}`}>›_</span>
                     <span><strong>{profile.display_name}</strong><small>{profile.ssh.server_address}:{profile.ssh.port}</small></span>
-                    {profile.mcp_policy.enabled_for_profile && <b className="mcp-badge" title="已允许 MCP 访问">MCP</b>}
+                    <span className="profile-badges"><b className="connection-mode-badge" title={usesIsolatedTunnel(profile) ? '隔离隧道 + SSH' : '仅 SSH 直接连接'}>{usesIsolatedTunnel(profile) ? '隧道' : 'SSH'}</b>{profile.mcp_policy.enabled_for_profile && <b className="mcp-badge" title="已允许 MCP 访问">MCP</b>}</span>
                   </button>
                 ))}
               </div>
@@ -425,7 +478,7 @@ export default function App() {
                 <span className="empty-eyebrow">SECURE REMOTE ACCESS</span>
                 <div className="prompt-glyph">&gt;_</div>
                 <h1>{selected ? `连接到 ${selected.display_name}` : '开始使用 LabRemote'}</h1>
-                <p>{selected ? '建立进程内隔离隧道，并通过已验证的 SSH 主机打开终端。不会创建 Windows VPN、网卡或系统路由。' : '请先在左侧新建连接。配置和凭据将分别安全保存。'}</p>
+                <p>{selected ? (selectedUsesTunnel ? '建立进程内隔离隧道，并通过已验证的 SSH 主机打开终端。不会创建系统 VPN、网卡或路由。' : '直接连接已验证的 SSH 主机。网页访问将继续通过 SSH 转发到远端主机可访问的端口。') : '请先在左侧新建连接。配置和凭据将分别安全保存。'}</p>
                 <div className="empty-actions">
                   {selected ? <>
                     <button className="button primary" onClick={() => connect(selected)}>连接并打开终端</button>
@@ -434,7 +487,7 @@ export default function App() {
                 </div>
               </div>
               <div className="security-strip">
-                <span><b>01</b><strong>凭据隔离</strong><small>Windows Credential Manager</small></span>
+                <span><b>01</b><strong>凭据隔离</strong><small>系统安全凭据存储</small></span>
                 <span><b>02</b><strong>身份验证</strong><small>证书与 SSH 指纹固定</small></span>
                 <span><b>03</b><strong>默认最小权限</strong><small>MCP 默认关闭并逐连接授权</small></span>
               </div>
@@ -444,7 +497,7 @@ export default function App() {
       </section>
 
       <footer className="statusbar">
-        <span title="用户态隔离隧道状态"><b className={`mini-dot ${vpnState === 'connected' ? 'online' : ''}`} />隧道 {vpnStateLabel}</span>
+        <span title={selectedUsesTunnel ? '用户态隔离隧道状态' : '该配置直接连接 SSH，不建立隔离隧道'}><b className={`mini-dot ${selectedUsesTunnel ? (vpnState === 'connected' ? 'online' : '') : (status.ssh_connected ? 'online' : '')}`} />{selectedUsesTunnel ? `隧道 ${vpnStateLabel}` : '方式 仅 SSH'}</span>
         <span title="SSH 控制连接状态"><b className={`mini-dot ${status.ssh_connected ? 'online' : ''}`} />SSH {status.ssh_connected ? '已连接' : '未连接'}</span>
         <span>会话 {(status.ui_sessions || 0) + (status.mcp_sessions || 0)}</span>
         <span>活动任务 {activeTasks}</span>
@@ -452,7 +505,7 @@ export default function App() {
         <span className={`mcp-status ${mcp.enabled ? 'enabled' : ''}`}>MCP {mcp.enabled ? `127.0.0.1:${mcp.port}` : '已关闭'}</span>
       </footer>
 
-      {dialogOpen && <ProfileDialog value={editing} onCancel={() => { setDialogOpen(false); setEditing(null) }} onSave={save} onTestTunnel={testTunnel} onTestSSH={testSSH} onClearSecret={clearSecret} />}
+      {dialogOpen && <ProfileDialog value={editing} onCancel={() => { setDialogOpen(false); setEditing(null) }} onSave={save} onTestTunnel={testTunnel} onTestSSH={testSSH} onSelectSSHPrivateKey={SelectSSHPrivateKey} onClearSecret={clearSecret} />}
       {browserProfile && <BrowserDialog profile={browserProfile} onClose={() => setBrowserProfile(null)} onOpen={targetURL => openBrowser(browserProfile, targetURL)} />}
       {transferMode && selected && <TransferDialog
         profile={selected}
@@ -463,6 +516,7 @@ export default function App() {
         onStartDownload={startDownload}
         onListRemote={listRemote}
         onNotice={setNotice}
+        onConfirm={confirmAction}
       />}
       {connectionMenu && <div className="connection-menu-layer" onMouseDown={() => setConnectionMenu(null)} onContextMenu={event => { event.preventDefault(); setConnectionMenu(null) }}>
         <nav className="connection-menu" style={{left: connectionMenu.x, top: connectionMenu.y}} onMouseDown={event => event.stopPropagation()}>
@@ -478,6 +532,7 @@ export default function App() {
           <button className="danger" onClick={() => { const profile = connectionMenu.profile; setConnectionMenu(null); void deleteProfile(profile) }}>删除连接</button>
         </nav>
       </div>}
+      {confirmation && <ConfirmDialog options={confirmation} onResolve={resolveConfirmation} />}
     </main>
   )
 }

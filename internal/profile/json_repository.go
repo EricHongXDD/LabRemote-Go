@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/EricHongXDD/LabRemote-Go/internal/model"
@@ -49,6 +50,8 @@ func (r *JSONRepository) Get(_ context.Context, id string) (model.ConnectionProf
 }
 
 func (r *JSONRepository) Upsert(_ context.Context, value model.ConnectionProfile) error {
+	value.ConnectionMode = value.EffectiveConnectionMode()
+	value.SSH.AuthMethod = value.SSH.EffectiveAuthMethod()
 	if err := value.Validate(); err != nil {
 		return err
 	}
@@ -59,8 +62,8 @@ func (r *JSONRepository) Upsert(_ context.Context, value model.ConnectionProfile
 		return err
 	}
 	for _, existing := range values {
-		if existing.ID != value.ID && existing.VPN.ConnectionName == value.VPN.ConnectionName {
-			return model.NewAppError("PROFILE_INVALID", "VPN 连接名称已存在", "profile", false)
+		if existing.ID != value.ID && strings.EqualFold(strings.TrimSpace(existing.DisplayName), strings.TrimSpace(value.DisplayName)) {
+			return model.NewAppError("PROFILE_INVALID", "连接名称已存在", "profile", false)
 		}
 	}
 	found := false
@@ -107,6 +110,10 @@ func (r *JSONRepository) read() ([]model.ConnectionProfile, error) {
 	var values []model.ConnectionProfile
 	if err := json.Unmarshal(data, &values); err != nil {
 		return nil, fmt.Errorf("解析连接配置失败: %w", err)
+	}
+	for index := range values {
+		values[index].ConnectionMode = values[index].EffectiveConnectionMode()
+		values[index].SSH.AuthMethod = values[index].SSH.EffectiveAuthMethod()
 	}
 	return values, nil
 }

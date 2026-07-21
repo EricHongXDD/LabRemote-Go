@@ -54,6 +54,8 @@ export function SaveProfile(arg1:app.SaveProfileRequest):Promise<model.Connectio
 
 export function SelectDownloadDirectory():Promise<string>;
 
+export function SelectSSHPrivateKey():Promise<string>;
+
 export function SelectUploadDirectory():Promise<model.UploadSelection>;
 
 export function SelectUploadFiles():Promise<Array<model.UploadSelection>>;

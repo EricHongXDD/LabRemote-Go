@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/EricHongXDD/LabRemote-Go/internal/model"
 )
 
 type mappingDialer struct {
@@ -19,6 +21,12 @@ type mappingDialer struct {
 	mu      sync.Mutex
 	profile string
 	target  string
+}
+
+type failingDialer struct{}
+
+func (failingDialer) DialWebContext(context.Context, string, string, string) (net.Conn, error) {
+	return nil, model.NewAppError("BROWSER_RECONNECT_FAILED", "网页访问连接自动恢复失败", "browser_proxy", true).WithDetails(map[string]any{"reason": "sensitive transport detail"})
 }
 
 func (d *mappingDialer) DialWebContext(ctx context.Context, profileID, network, address string) (net.Conn, error) {
@@ -29,7 +37,7 @@ func (d *mappingDialer) DialWebContext(ctx context.Context, profileID, network, 
 	return (&net.Dialer{}).DialContext(ctx, "tcp4", d.address)
 }
 
-func TestBrowserProxyUsesIsolatedDialerAndRewritesSessionState(t *testing.T) {
+func TestBrowserProxyUsesSSHDialerAndRewritesSessionState(t *testing.T) {
 	var expectedHost string
 	remote := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
@@ -138,5 +146,35 @@ func TestNormalizeTargetURL(t *testing.T) {
 		if _, err := normalizeTargetURL(value); err != nil {
 			t.Fatalf("远端 SSH 主机本地资源 %q 应被允许: %v", value, err)
 		}
+	}
+}
+
+func TestBrowserProxyErrorPageDoesNotExposeStructuredInternalError(t *testing.T) {
+	manager := NewManager(failingDialer{})
+	defer manager.CloseAll(context.Background())
+	bootstrapURL, err := manager.Open(context.Background(), "profile-error", "http://127.0.0.1:1294")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Jar: jar, Timeout: 5 * time.Second}
+	response, err := client.Get(bootstrapURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if response.StatusCode != http.StatusBadGateway || !strings.Contains(text, "自动恢复失败") {
+		t.Fatalf("错误页内容异常: status=%d body=%q", response.StatusCode, text)
+	}
+	if strings.Contains(text, "APPERROR") || strings.Contains(text, "sensitive transport detail") {
+		t.Fatalf("错误页不应暴露结构化内部错误: %q", text)
 	}
 }

@@ -58,7 +58,8 @@ func (s *StateMachine) Get(profileID string) model.VPNStatus {
 
 func validTransition(from, to model.VPNState) bool {
 	allowed := map[model.VPNState]map[model.VPNState]bool{
-		model.VPNDisconnected:  {model.VPNPreparing: true},
+		model.VPNDisconnected:  {model.VPNPreparing: true, model.VPNNotRequired: true},
+		model.VPNNotRequired:   {model.VPNDisconnected: true},
 		model.VPNPreparing:     {model.VPNDialing: true, model.VPNFailed: true},
 		model.VPNDialing:       {model.VPNConnected: true, model.VPNFailed: true},
 		model.VPNConnected:     {model.VPNDisconnecting: true, model.VPNReconnecting: true, model.VPNFailed: true},
