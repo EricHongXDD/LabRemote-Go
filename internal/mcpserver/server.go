@@ -24,21 +24,23 @@ type Status struct {
 }
 
 type Controller struct {
-	core      CoreService
-	secrets   secrets.Store
-	audit     *Auditor
-	mu        sync.Mutex
-	server    *http.Server
-	listener  net.Listener
-	port      int
-	execSlots chan struct{}
-	sessionMu sync.Mutex
-	sessions  map[string]struct{}
+	core       CoreService
+	secrets    secrets.Store
+	audit      *Auditor
+	mu         sync.Mutex
+	server     *http.Server
+	listener   net.Listener
+	port       int
+	execSlots  chan struct{}
+	sessionMu  sync.Mutex
+	sessions   map[string]struct{}
+	uploadMu   sync.Mutex
+	uploadJobs map[string]string
 }
 
 func NewController(core CoreService, secretStore secrets.Store, auditor *Auditor) *Controller {
 	return &Controller{
-		core: core, secrets: secretStore, audit: auditor, execSlots: make(chan struct{}, 4), sessions: make(map[string]struct{}),
+		core: core, secrets: secretStore, audit: auditor, execSlots: make(chan struct{}, 4), sessions: make(map[string]struct{}), uploadJobs: make(map[string]string),
 	}
 }
 
@@ -59,7 +61,7 @@ func (c *Controller) Start(ctx context.Context, port int) (Status, error) {
 	if err != nil {
 		return Status{}, model.NewAppError("MCP_BUSY", "MCP 本机端口无法监听", "mcp_start", true).WithDetails(map[string]any{"port": port})
 	}
-	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "LabRemote", Version: "1.0.0"}, nil)
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "LabRemote", Version: "1.1.0"}, nil)
 	addTools(mcpServer, c)
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer }, nil)
 	mux := http.NewServeMux()
@@ -92,16 +94,28 @@ func (c *Controller) Stop(ctx context.Context) error {
 	if server == nil {
 		return nil
 	}
+	shutdownContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	shutdownErr := server.Shutdown(shutdownContext)
+	if shutdownErr != nil {
+		// 超时后关闭剩余请求，确保不会在资源快照之后新增 MCP 任务。
+		_ = server.Close()
+	}
+	if listener != nil {
+		_ = listener.Close()
+	}
+	c.uploadMu.Lock()
+	jobIDs := make([]string, 0, len(c.uploadJobs))
+	for jobID := range c.uploadJobs {
+		jobIDs = append(jobIDs, jobID)
+	}
+	c.uploadJobs = make(map[string]string)
+	c.uploadMu.Unlock()
+	c.core.CloseMCPUploads(ctx, jobIDs)
 	c.core.CloseMCPSessions(ctx)
 	c.sessionMu.Lock()
 	c.sessions = make(map[string]struct{})
 	c.sessionMu.Unlock()
-	shutdownContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	shutdownErr := server.Shutdown(shutdownContext)
-	if listener != nil {
-		_ = listener.Close()
-	}
 	if errors.Is(shutdownErr, net.ErrClosed) || errors.Is(shutdownErr, http.ErrServerClosed) {
 		return nil
 	}

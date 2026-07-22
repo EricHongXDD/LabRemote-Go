@@ -255,6 +255,7 @@ export default function ProfileDialog({value, onCancel, onSave, onTestTunnel, on
                 <label className="check"><input type="checkbox" checked={profile.mcp_policy.enabled_for_profile} onChange={event => updatePolicy('enabled_for_profile', event.target.checked)} />允许 MCP 看到此配置</label>
                 <label className="check"><input type="checkbox" disabled={!profile.mcp_policy.enabled_for_profile} checked={profile.mcp_policy.allow_exec} onChange={event => updatePolicy('allow_exec', event.target.checked)} />允许执行非交互命令</label>
                 <label className="check"><input type="checkbox" disabled={!profile.mcp_policy.enabled_for_profile} checked={profile.mcp_policy.allow_interactive} onChange={event => updatePolicy('allow_interactive', event.target.checked)} />允许创建交互会话</label>
+                <label className="check"><input type="checkbox" disabled={!profile.mcp_policy.enabled_for_profile} checked={profile.mcp_policy.allow_file_upload} onChange={event => updatePolicy('allow_file_upload', event.target.checked)} />允许上传本地文件</label>
                 <label className="check"><input type="checkbox" disabled={!profile.mcp_policy.enabled_for_profile} checked={profile.mcp_policy.allow_disconnect} onChange={event => updatePolicy('allow_disconnect', event.target.checked)} />允许断开连接</label>
               </div>
             </div>

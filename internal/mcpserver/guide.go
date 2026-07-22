@@ -41,7 +41,7 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("6. 不得输出、转述或记录本文档中的 Bearer Token；不得尝试把 MCP 暴露到公网、局域网或其他代理。\n")
 	guide.WriteString("7. 交互会话完成后必须调用 `ssh_session_close`；不要遗留后台 PTY 占用会话配额。\n")
 	guide.WriteString("8. 除非用户明确要求，不调用 `vpn_disconnect`；存在图形终端时 MCP 无权断开连接。\n")
-	guide.WriteString("9. MCP 不提供上传/下载工具。需要文件传输时，提示用户使用 LabRemote 图形界面的“文件传输”。\n")
+	guide.WriteString("9. 用户明确要求上传时，先确认本机绝对路径、目标 Profile 和远端目录，再使用 `file_upload_*`；`overwrite` 默认保持 `false`，只有用户明确同意覆盖时才设为 `true`。MCP 暂不提供下载工具。\n")
 	guide.WriteString("10. 如果当前 AI 环境不能注册 Streamable HTTP MCP 或不能添加自定义 Authorization 请求头，应明确告知用户完成客户端配置，不得假装已经连接。\n\n")
 
 	guide.WriteString("## 2. MCP 客户端配置（含敏感令牌）\n\n")
@@ -76,7 +76,10 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("| `ssh_session_write` | 向 PTY 写入 Base64 字节 | `session_id`, `data_base64` |\n")
 	guide.WriteString("| `ssh_session_read` | 按 cursor 增量读取 Base64 输出 | `session_id`, `cursor`, `max_bytes`, `wait_ms` |\n")
 	guide.WriteString("| `ssh_session_resize` | 调整 PTY 尺寸 | `session_id`, `cols`, `rows` |\n")
-	guide.WriteString("| `ssh_session_close` | 关闭 MCP 专属 PTY | `session_id` |\n\n")
+	guide.WriteString("| `ssh_session_close` | 关闭 MCP 专属 PTY | `session_id` |\n")
+	guide.WriteString("| `file_upload_start` | 异步上传本机文件或目录 | `profile_id`, `local_paths`, `remote_directory`, `overwrite`, `resume` |\n")
+	guide.WriteString("| `file_upload_status` | 查询 MCP 自有上传任务 | `job_id` |\n")
+	guide.WriteString("| `file_upload_cancel` | 取消 MCP 自有上传任务 | `job_id` |\n\n")
 
 	guide.WriteString("## 5. 推荐工作流：执行一次命令\n\n")
 	guide.WriteString("1. 调用 `profiles_list`。\n")
@@ -99,16 +102,29 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("5. `open=false` 表示会话已经结束；`truncated=true` 表示旧输出被 2 MiB 环形缓冲区覆盖，应从本次返回的 cursor 继续。\n")
 	guide.WriteString("6. 完成后调用 `ssh_session_close`。异常、取消和任务清理路径也必须关闭会话。\n\n")
 
-	guide.WriteString("## 7. 参数限制与状态解释\n\n")
+	guide.WriteString("## 7. 推荐工作流：上传文件或目录\n\n")
+	guide.WriteString("1. 确认用户要上传的内容、目标连接和远端目录；`local_paths` 指 LabRemote 所在电脑上的路径，不是 AI 沙箱或远端服务器路径。\n")
+	guide.WriteString("2. 从 `profiles_list` 选择 `file_upload_allowed=true` 的 Profile；需要时先调用 `vpn_connect`。\n")
+	guide.WriteString("3. 调用 `file_upload_start`。本地路径必须是绝对路径，目标目录必填；默认 `overwrite=false`，中断后希望复用安全分片时设置 `resume=true`：\n\n")
+	guide.WriteString("```json\n")
+	fmt.Fprintf(&guide, "{\n  \"profile_id\": %q,\n  \"local_paths\": [\"C:\\\\Users\\\\example\\\\payload.bin\"],\n  \"remote_directory\": \"/srv/uploads\",\n  \"overwrite\": false,\n  \"resume\": true\n}\n", exampleProfileID(profiles))
+	guide.WriteString("```\n\n")
+	guide.WriteString("4. 保存返回的 `job_id`，使用 `file_upload_status` 低频轮询，直到 `state` 为 `completed`、`failed` 或 `cancelled`。关注 `bytes_transferred`、`bytes_resumed`、文件/目录完成数和错误字段。\n")
+	guide.WriteString("5. 用户取消任务时调用 `file_upload_cancel`。MCP 只能查询或取消当前服务实例自己创建的上传任务，不能操作图形界面任务。\n\n")
+
+	guide.WriteString("## 8. 参数限制与状态解释\n\n")
 	guide.WriteString("- `ssh_exec.timeout_seconds`：默认 30，最大 300 秒。\n")
 	guide.WriteString("- `ssh_exec.max_output_bytes`：stdout/stderr 各默认 1 MiB，最大 4 MiB。\n")
 	guide.WriteString("- 非交互命令最多并发 4 个；MCP 交互会话最多 8 个。\n")
 	guide.WriteString("- `ssh_session_write` 单次解码后最多 65536 字节。\n")
 	guide.WriteString("- `ssh_session_read.max_bytes` 单次最大 1 MiB；`wait_ms` 范围为 0-30000。\n")
+	guide.WriteString("- `file_upload_start.local_paths`：1-32 个本机绝对路径，单个最多 4096 字节、总计最多 32768 字节；文件夹会递归上传但不跟随符号链接。\n")
+	guide.WriteString("- 每个 Profile 同时最多一个上传任务；任务内部最多并行处理 3 个文件，单个大文件使用并发 SFTP 请求。\n")
+	guide.WriteString("- 上传状态依次可能为 `queued`、`scanning`、`uploading`，终态为 `completed`、`failed` 或 `cancelled`。\n")
 	guide.WriteString("- `connection_mode` 为 `isolated_tunnel` 或 `direct_ssh`。`vpn_status=not_required` 表示该配置直接连接 SSH；其他状态包括 `disconnected`、`preparing`、`dialing`、`connected`、`reconnecting`、`disconnecting`、`failed`。\n")
 	guide.WriteString("- `vpn_disconnect(force=true)` 仍不能关闭图形界面创建的终端。\n\n")
 
-	guide.WriteString("## 8. 常见错误处理\n\n")
+	guide.WriteString("## 9. 常见错误处理\n\n")
 	guide.WriteString("| 错误 | AI 应采取的动作 |\n")
 	guide.WriteString("|---|---|\n")
 	guide.WriteString("| `MCP_UNAUTHORIZED` / HTTP 401 | 停止重试，请用户重新导出配置或更新 Token |\n")
@@ -119,10 +135,14 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("| `SSH_AUTH_FAILED` | 请用户在 LabRemote 编辑连接并更新凭据 |\n")
 	guide.WriteString("| `SSH_COMMAND_TIMEOUT` | 拆分任务或在理由充分时提高超时，上限 300 秒 |\n")
 	guide.WriteString("| `MCP_BUSY` | 降低并发、关闭不用的会话，稍后重试 |\n")
-	guide.WriteString("| `MCP_SESSION_NOT_FOUND` | 丢弃旧 ID，重新打开会话 |\n\n")
+	guide.WriteString("| `MCP_SESSION_NOT_FOUND` | 丢弃旧 ID，重新打开会话 |\n")
+	guide.WriteString("| `MCP_UPLOAD_INVALID` | 修正本机绝对路径、目标目录或路径数量后重试 |\n")
+	guide.WriteString("| `MCP_UPLOAD_NOT_FOUND` | 丢弃旧任务 ID；只能使用当前 MCP 返回的 `job_id` |\n")
+	guide.WriteString("| `UPLOAD_BUSY` | 等待该 Profile 的当前上传结束，或取消自有上传任务 |\n")
+	guide.WriteString("| `UPLOAD_TARGET_EXISTS` | 不自动覆盖；请用户确认后再设置 `overwrite=true` |\n\n")
 
-	guide.WriteString("## 9. 安全与撤销\n\n")
-	guide.WriteString("本文档本身包含访问令牌。任务完成后应妥善保管或删除文件；怀疑泄露时，在 LabRemote 中点击“重新生成令牌”，旧令牌会立即失效。关闭 MCP 开关会停止服务并关闭 MCP 专属会话，但不会关闭图形界面的 SSH 标签。\n")
+	guide.WriteString("## 10. 安全与撤销\n\n")
+	guide.WriteString("本文档本身包含访问令牌。任务完成后应妥善保管或删除文件；怀疑泄露时，在 LabRemote 中点击“重新生成令牌”，旧令牌会立即失效。关闭 MCP 开关会停止服务、取消 MCP 自有上传并关闭 MCP 专属会话，但不会关闭图形界面的 SSH 标签或传输任务。\n")
 	return guide.String()
 }
 
@@ -133,6 +153,9 @@ func profileCapabilities(value model.ConnectionProfile) string {
 	}
 	if value.MCPPolicy.AllowInteractive {
 		capabilities = append(capabilities, "交互终端")
+	}
+	if value.MCPPolicy.AllowFileUpload {
+		capabilities = append(capabilities, "文件上传")
 	}
 	if value.MCPPolicy.AllowDisconnect {
 		capabilities = append(capabilities, "断开连接")

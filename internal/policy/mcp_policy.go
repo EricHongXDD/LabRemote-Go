@@ -31,6 +31,16 @@ func RequireInteractive(value model.ConnectionProfile) error {
 	return nil
 }
 
+func RequireFileUpload(value model.ConnectionProfile) error {
+	if err := RequireProfile(value); err != nil {
+		return err
+	}
+	if !value.MCPPolicy.AllowFileUpload {
+		return model.NewAppError("MCP_TOOL_FORBIDDEN", "此连接配置未授权 MCP 上传文件", "mcp_policy", false)
+	}
+	return nil
+}
+
 func RequireDisconnect(value model.ConnectionProfile) error {
 	if err := RequireProfile(value); err != nil {
 		return err

@@ -1,6 +1,6 @@
 # 本地开发工具与缓存
 .tools/
-.gocache/
+.gocache*/
 .agents/
 .codex/
 .idea/

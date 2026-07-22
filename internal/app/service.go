@@ -725,6 +725,57 @@ func (s *Service) MCPExec(ctx context.Context, request model.ExecRequest) (model
 	return s.ssh.Exec(ctx, request)
 }
 
+func (s *Service) MCPStartUpload(ctx context.Context, request model.UploadRequest) (model.UploadProgress, error) {
+	value, err := s.profiles.Get(ctx, request.ProfileID)
+	if err != nil {
+		return model.UploadProgress{}, err
+	}
+	if err := policy.RequireFileUpload(value); err != nil {
+		return model.UploadProgress{}, err
+	}
+	if err := s.EnsureConnected(ctx, request.ProfileID); err != nil {
+		return model.UploadProgress{}, err
+	}
+	// MCP 工具调用返回后 HTTP 请求上下文会结束，上传任务必须继续运行。
+	return s.ssh.StartUpload(context.WithoutCancel(ctx), request)
+}
+
+func (s *Service) MCPUploadStatus(ctx context.Context, jobID string) (model.UploadProgress, error) {
+	progress, err := s.ssh.UploadStatus(jobID)
+	if err != nil {
+		return model.UploadProgress{}, err
+	}
+	value, err := s.profiles.Get(ctx, progress.ProfileID)
+	if err != nil {
+		return model.UploadProgress{}, err
+	}
+	if err := policy.RequireFileUpload(value); err != nil {
+		return model.UploadProgress{}, err
+	}
+	return progress, nil
+}
+
+func (s *Service) MCPCancelUpload(ctx context.Context, jobID string) error {
+	progress, err := s.ssh.UploadStatus(jobID)
+	if err != nil {
+		return err
+	}
+	value, err := s.profiles.Get(ctx, progress.ProfileID)
+	if err != nil {
+		return err
+	}
+	if err := policy.RequireFileUpload(value); err != nil {
+		return err
+	}
+	return s.ssh.CancelUpload(jobID)
+}
+
+func (s *Service) CloseMCPUploads(_ context.Context, jobIDs []string) {
+	for _, jobID := range jobIDs {
+		_ = s.ssh.CancelUpload(jobID)
+	}
+}
+
 func (s *Service) MCPOpenSession(ctx context.Context, profileID string, cols, rows int) (string, error) {
 	value, err := s.profiles.Get(ctx, profileID)
 	if err != nil {

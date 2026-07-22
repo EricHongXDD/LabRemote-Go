@@ -12,9 +12,14 @@ import (
 )
 
 type lifecycleCore struct {
-	uiSessions int
-	mcpClosed  int
-	profiles   []model.ConnectionProfile
+	uiSessions      int
+	mcpClosed       int
+	profiles        []model.ConnectionProfile
+	uploadRequest   model.UploadRequest
+	uploadProgress  model.UploadProgress
+	uploadCancelled string
+	closedUploads   []string
+	uploadStatusErr error
 }
 
 func (c *lifecycleCore) MCPProfiles(context.Context) ([]model.ConnectionProfile, error) {
@@ -37,7 +42,24 @@ func (c *lifecycleCore) MCPReadSession(context.Context, string, uint64, int, tim
 }
 func (c *lifecycleCore) MCPResizeSession(context.Context, string, int, int) error { return nil }
 func (c *lifecycleCore) MCPCloseSession(context.Context, string) error            { return nil }
-func (c *lifecycleCore) CloseMCPSessions(context.Context)                         { c.mcpClosed++ }
+func (c *lifecycleCore) MCPStartUpload(_ context.Context, request model.UploadRequest) (model.UploadProgress, error) {
+	c.uploadRequest = request
+	if c.uploadProgress.JobID == "" {
+		c.uploadProgress = model.UploadProgress{JobID: "upload-mcp-test", ProfileID: request.ProfileID, State: model.UploadQueued}
+	}
+	return c.uploadProgress, nil
+}
+func (c *lifecycleCore) MCPUploadStatus(context.Context, string) (model.UploadProgress, error) {
+	return c.uploadProgress, c.uploadStatusErr
+}
+func (c *lifecycleCore) MCPCancelUpload(_ context.Context, jobID string) error {
+	c.uploadCancelled = jobID
+	return nil
+}
+func (c *lifecycleCore) CloseMCPUploads(_ context.Context, jobIDs []string) {
+	c.closedUploads = append(c.closedUploads, jobIDs...)
+}
+func (c *lifecycleCore) CloseMCPSessions(context.Context) { c.mcpClosed++ }
 
 func freeLocalPort(t *testing.T) int {
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -88,6 +110,7 @@ func TestAIGuideMarkdownContainsConfigurationToolsAndAuthorizedProfiles(t *testi
 			EnabledForProfile: true,
 			AllowExec:         true,
 			AllowInteractive:  true,
+			AllowFileUpload:   true,
 			AllowDisconnect:   false,
 		},
 	}
@@ -113,6 +136,7 @@ func TestAIGuideMarkdownContainsConfigurationToolsAndAuthorizedProfiles(t *testi
 		"profile-guide-test", "实验室 \\| 服务器", "192.0.2.20:22", "非交互命令", "交互终端",
 		"profiles_list", "connection_status", "vpn_connect", "vpn_disconnect", "ssh_exec",
 		"ssh_session_open", "ssh_session_write", "ssh_session_read", "ssh_session_resize", "ssh_session_close",
+		"file_upload_start", "file_upload_status", "file_upload_cancel", "文件上传",
 		"data_base64", "cursor", "exit_code", "truncated", "Bearer Token",
 	} {
 		if !strings.Contains(guide, expected) {
