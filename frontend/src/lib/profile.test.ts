@@ -2,6 +2,10 @@ import {describe, expect, it} from 'vitest'
 import {connectionMode, emptyProfile, sshAuthMethod, validateProfile} from './profile'
 
 describe('validateProfile', () => {
+  it('新连接默认不向 MCP 开放本地文件上传', () => {
+    expect(emptyProfile().mcp_policy.allow_file_upload).toBe(false)
+  })
+
   it('新建配置时要求隧道密码和 SSH 密码', () => {
     const value = emptyProfile()
     value.display_name = '实验室'

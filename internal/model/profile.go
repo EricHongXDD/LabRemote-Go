@@ -63,6 +63,7 @@ type MCPPolicy struct {
 	EnabledForProfile bool `json:"enabled_for_profile"`
 	AllowExec         bool `json:"allow_exec"`
 	AllowInteractive  bool `json:"allow_interactive"`
+	AllowFileUpload   bool `json:"allow_file_upload"`
 	AllowDisconnect   bool `json:"allow_disconnect"`
 }
 

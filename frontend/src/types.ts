@@ -2,6 +2,7 @@ export type MCPPolicy = {
   enabled_for_profile: boolean
   allow_exec: boolean
   allow_interactive: boolean
+  allow_file_upload: boolean
   allow_disconnect: boolean
 }
 

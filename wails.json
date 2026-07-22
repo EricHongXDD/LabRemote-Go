@@ -13,7 +13,7 @@
   "info": {
     "companyName": "EricHongXDD",
     "productName": "LabRemote",
-    "productVersion": "1.0.0",
+    "productVersion": "1.1.0",
     "copyright": "Copyright © 2026 EricHongXDD",
     "comments": "SSH + 可选隔离隧道 + 文件传输 + 网页访问 + MCP 跨平台客户端"
   }

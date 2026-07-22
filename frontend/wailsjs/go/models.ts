@@ -132,6 +132,7 @@ export namespace model {
 	    enabled_for_profile: boolean;
 	    allow_exec: boolean;
 	    allow_interactive: boolean;
+	    allow_file_upload: boolean;
 	    allow_disconnect: boolean;
 
 	    static createFrom(source: any = {}) {
@@ -143,6 +144,7 @@ export namespace model {
 	        this.enabled_for_profile = source["enabled_for_profile"];
 	        this.allow_exec = source["allow_exec"];
 	        this.allow_interactive = source["allow_interactive"];
+	        this.allow_file_upload = source["allow_file_upload"];
 	        this.allow_disconnect = source["allow_disconnect"];
 	    }
 	}

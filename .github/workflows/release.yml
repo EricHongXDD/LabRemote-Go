@@ -9,7 +9,7 @@ on:
       tag:
         description: "要创建或更新的版本标签，必须与 wails.json 一致"
         required: true
-        default: "v1.0.0"
+        default: "v1.1.0"
         type: string
       publish:
         description: "发布到 GitHub Releases；关闭时仅生成 Actions Artifact"
