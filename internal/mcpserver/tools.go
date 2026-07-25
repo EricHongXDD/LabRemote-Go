@@ -28,6 +28,10 @@ type CoreService interface {
 	MCPUploadStatus(ctx context.Context, jobID string) (model.UploadProgress, error)
 	MCPCancelUpload(ctx context.Context, jobID string) error
 	CloseMCPUploads(ctx context.Context, jobIDs []string)
+	MCPStartDownload(ctx context.Context, request model.DownloadRequest) (model.DownloadProgress, error)
+	MCPDownloadStatus(ctx context.Context, jobID string) (model.DownloadProgress, error)
+	MCPCancelDownload(ctx context.Context, jobID string) error
+	CloseMCPDownloads(ctx context.Context, jobIDs []string)
 	CloseMCPSessions(ctx context.Context)
 }
 
@@ -38,12 +42,13 @@ type profileInput struct {
 }
 
 type profileSummary struct {
-	ID                string `json:"id"`
-	Name              string `json:"name"`
-	ConnectionMode    string `json:"connection_mode"`
-	VPNStatus         string `json:"vpn_status"`
-	SSHStatus         string `json:"ssh_status"`
-	FileUploadAllowed bool   `json:"file_upload_allowed"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	ConnectionMode      string `json:"connection_mode"`
+	VPNStatus           string `json:"vpn_status"`
+	SSHStatus           string `json:"ssh_status"`
+	FileUploadAllowed   bool   `json:"file_upload_allowed"`
+	FileDownloadAllowed bool   `json:"file_download_allowed"`
 }
 
 type profilesOutput struct {
@@ -131,6 +136,18 @@ type uploadJobInput struct {
 	JobID string `json:"job_id" jsonschema:"file_upload_start 返回的上传任务 ID"`
 }
 
+type fileDownloadStartInput struct {
+	ProfileID      string   `json:"profile_id" jsonschema:"已授权文件下载的连接配置 ID"`
+	RemotePaths    []string `json:"remote_paths" jsonschema:"SSH 服务器上的文件或目录路径，最多 32 个"`
+	LocalDirectory string   `json:"local_directory" jsonschema:"LabRemote 所在电脑上已存在的绝对目标目录"`
+	Overwrite      bool     `json:"overwrite,omitempty" jsonschema:"是否允许覆盖已存在的同名本地目标，默认 false"`
+	Resume         bool     `json:"resume,omitempty" jsonschema:"是否续传匹配的安全分片文件，默认 false"`
+}
+
+type downloadJobInput struct {
+	JobID string `json:"job_id" jsonschema:"file_download_start 返回的下载任务 ID"`
+}
+
 func addTools(server *mcp.Server, controller *Controller) {
 	mcp.AddTool(server, &mcp.Tool{Name: "profiles_list", Description: "列出明确授权给 MCP 使用的 LabRemote 连接配置"}, controller.profilesList)
 	mcp.AddTool(server, &mcp.Tool{Name: "connection_status", Description: "查询一个已授权配置的连接方式、隔离隧道、SSH 和活动会话状态"}, controller.connectionStatus)
@@ -145,6 +162,9 @@ func addTools(server *mcp.Server, controller *Controller) {
 	mcp.AddTool(server, &mcp.Tool{Name: "file_upload_start", Description: "异步上传 LabRemote 所在电脑上的文件或目录到指定 SSH 服务器目录；支持并发、断点续传与默认拒绝覆盖"}, controller.fileUploadStart)
 	mcp.AddTool(server, &mcp.Tool{Name: "file_upload_status", Description: "查询当前 MCP 服务自己创建的文件上传任务进度"}, controller.fileUploadStatus)
 	mcp.AddTool(server, &mcp.Tool{Name: "file_upload_cancel", Description: "取消当前 MCP 服务自己创建的文件上传任务"}, controller.fileUploadCancel)
+	mcp.AddTool(server, &mcp.Tool{Name: "file_download_start", Description: "异步下载指定 SSH 服务器上的文件或目录到 LabRemote 所在电脑的已存在目录；支持并发、断点续传与默认拒绝覆盖"}, controller.fileDownloadStart)
+	mcp.AddTool(server, &mcp.Tool{Name: "file_download_status", Description: "查询当前 MCP 服务自己创建的文件下载任务进度"}, controller.fileDownloadStatus)
+	mcp.AddTool(server, &mcp.Tool{Name: "file_download_cancel", Description: "取消当前 MCP 服务自己创建的文件下载任务"}, controller.fileDownloadCancel)
 }
 
 func result[Output any](output Output) (*mcp.CallToolResult, Output, error) {
@@ -165,14 +185,14 @@ func (c *Controller) profilesList(ctx context.Context, _ *mcp.CallToolRequest, _
 	for _, value := range values {
 		status, statusErr := c.core.ConnectionStatus(ctx, value.ID)
 		if statusErr != nil {
-			output.Profiles = append(output.Profiles, profileSummary{ID: value.ID, Name: value.DisplayName, ConnectionMode: string(value.EffectiveConnectionMode()), VPNStatus: "unknown", SSHStatus: "unknown", FileUploadAllowed: value.MCPPolicy.AllowFileUpload})
+			output.Profiles = append(output.Profiles, profileSummary{ID: value.ID, Name: value.DisplayName, ConnectionMode: string(value.EffectiveConnectionMode()), VPNStatus: "unknown", SSHStatus: "unknown", FileUploadAllowed: value.MCPPolicy.AllowFileUpload, FileDownloadAllowed: value.MCPPolicy.AllowFileDownload})
 			continue
 		}
 		sshStatus := "disconnected"
 		if status.SSHConnected {
 			sshStatus = "connected"
 		}
-		output.Profiles = append(output.Profiles, profileSummary{ID: value.ID, Name: value.DisplayName, ConnectionMode: string(value.EffectiveConnectionMode()), VPNStatus: string(status.VPN.State), SSHStatus: sshStatus, FileUploadAllowed: value.MCPPolicy.AllowFileUpload})
+		output.Profiles = append(output.Profiles, profileSummary{ID: value.ID, Name: value.DisplayName, ConnectionMode: string(value.EffectiveConnectionMode()), VPNStatus: string(status.VPN.State), SSHStatus: sshStatus, FileUploadAllowed: value.MCPPolicy.AllowFileUpload, FileDownloadAllowed: value.MCPPolicy.AllowFileDownload})
 	}
 	return result(output)
 }
@@ -415,6 +435,119 @@ func (c *Controller) normalizeOwnedUploadError(jobID string, err error) error {
 	delete(c.uploadJobs, jobID)
 	c.uploadMu.Unlock()
 	return model.NewAppError("MCP_UPLOAD_NOT_FOUND", "上传任务不存在或不属于当前 MCP 服务", "mcp_upload", false)
+}
+
+func (c *Controller) fileDownloadStart(ctx context.Context, _ *mcp.CallToolRequest, input fileDownloadStartInput) (*mcp.CallToolResult, model.DownloadProgress, error) {
+	request, err := normalizeFileDownloadInput(input)
+	if err != nil {
+		return toolError[model.DownloadProgress](err)
+	}
+	start := time.Now()
+	progress, err := c.core.MCPStartDownload(ctx, request)
+	if c.audit != nil {
+		// 审计日志只记录 Profile 和任务结果，不记录远端路径或本地保存目录。
+		c.audit.Tool("file_download_start", request.ProfileID, "", outcome(err), 0, time.Since(start))
+	}
+	if err != nil {
+		return toolError[model.DownloadProgress](err)
+	}
+	jobID := strings.TrimSpace(progress.JobID)
+	if jobID == "" {
+		return toolError[model.DownloadProgress](model.NewAppError("MCP_DOWNLOAD_INVALID", "下载引擎未返回任务 ID", "mcp_download", true))
+	}
+	progress.JobID = jobID
+	c.downloadMu.Lock()
+	c.downloadJobs[jobID] = request.ProfileID
+	c.downloadMu.Unlock()
+	return result(progress)
+}
+
+func (c *Controller) fileDownloadStatus(ctx context.Context, _ *mcp.CallToolRequest, input downloadJobInput) (*mcp.CallToolResult, model.DownloadProgress, error) {
+	jobID := strings.TrimSpace(input.JobID)
+	profileID, err := c.ownedDownload(jobID)
+	if err != nil {
+		return toolError[model.DownloadProgress](err)
+	}
+	progress, err := c.core.MCPDownloadStatus(ctx, jobID)
+	if c.audit != nil {
+		c.audit.Tool("file_download_status", profileID, "", outcome(err), 0, 0)
+	}
+	if err != nil {
+		return toolError[model.DownloadProgress](c.normalizeOwnedDownloadError(jobID, err))
+	}
+	return result(progress)
+}
+
+func (c *Controller) fileDownloadCancel(ctx context.Context, _ *mcp.CallToolRequest, input downloadJobInput) (*mcp.CallToolResult, okOutput, error) {
+	jobID := strings.TrimSpace(input.JobID)
+	profileID, err := c.ownedDownload(jobID)
+	if err != nil {
+		return toolError[okOutput](err)
+	}
+	err = c.core.MCPCancelDownload(ctx, jobID)
+	if c.audit != nil {
+		c.audit.Tool("file_download_cancel", profileID, "", outcome(err), 0, 0)
+	}
+	if err != nil {
+		return toolError[okOutput](c.normalizeOwnedDownloadError(jobID, err))
+	}
+	return result(okOutput{OK: true})
+}
+
+func normalizeFileDownloadInput(input fileDownloadStartInput) (model.DownloadRequest, error) {
+	profileID := strings.TrimSpace(input.ProfileID)
+	localDirectory := strings.TrimSpace(input.LocalDirectory)
+	if profileID == "" || len(profileID) > 256 || strings.ContainsRune(profileID, '\x00') {
+		return model.DownloadRequest{}, model.NewAppError("MCP_DOWNLOAD_INVALID", "profile_id 不能为空且不能超过 256 字节", "mcp_download", false)
+	}
+	if localDirectory == "" || len(localDirectory) > 4096 || strings.ContainsRune(localDirectory, '\x00') || !filepath.IsAbs(localDirectory) {
+		return model.DownloadRequest{}, model.NewAppError("MCP_DOWNLOAD_INVALID", "local_directory 必须是 LabRemote 所在电脑上的绝对目录", "mcp_download", false)
+	}
+	if len(input.RemotePaths) == 0 || len(input.RemotePaths) > 32 {
+		return model.DownloadRequest{}, model.NewAppError("MCP_DOWNLOAD_INVALID", "remote_paths 必须包含 1-32 个远端路径", "mcp_download", false)
+	}
+	remotePaths := make([]string, 0, len(input.RemotePaths))
+	totalPathBytes := 0
+	for _, rawPath := range input.RemotePaths {
+		remotePath := strings.TrimSpace(rawPath)
+		if remotePath == "" || len(remotePath) > 4096 || strings.ContainsRune(remotePath, '\x00') {
+			return model.DownloadRequest{}, model.NewAppError("MCP_DOWNLOAD_INVALID", "remote_paths 只能包含不超过 4096 字节的有效远端路径", "mcp_download", false)
+		}
+		totalPathBytes += len(remotePath)
+		if totalPathBytes > 32768 {
+			return model.DownloadRequest{}, model.NewAppError("MCP_DOWNLOAD_INVALID", "remote_paths 总长度不能超过 32768 字节", "mcp_download", false)
+		}
+		remotePaths = append(remotePaths, remotePath)
+	}
+	return model.DownloadRequest{
+		ProfileID: profileID, RemotePaths: remotePaths, LocalDirectory: filepath.Clean(localDirectory),
+		Overwrite: input.Overwrite, Resume: input.Resume,
+	}, nil
+}
+
+func (c *Controller) ownedDownload(jobID string) (string, error) {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" || len(jobID) > 256 {
+		return "", model.NewAppError("MCP_DOWNLOAD_NOT_FOUND", "下载任务不存在或不属于当前 MCP 服务", "mcp_download", false)
+	}
+	c.downloadMu.Lock()
+	profileID, ok := c.downloadJobs[jobID]
+	c.downloadMu.Unlock()
+	if !ok {
+		return "", model.NewAppError("MCP_DOWNLOAD_NOT_FOUND", "下载任务不存在或不属于当前 MCP 服务", "mcp_download", false)
+	}
+	return profileID, nil
+}
+
+func (c *Controller) normalizeOwnedDownloadError(jobID string, err error) error {
+	var appErr *model.AppError
+	if !errors.As(err, &appErr) || appErr.Code != "DOWNLOAD_NOT_FOUND" {
+		return err
+	}
+	c.downloadMu.Lock()
+	delete(c.downloadJobs, jobID)
+	c.downloadMu.Unlock()
+	return model.NewAppError("MCP_DOWNLOAD_NOT_FOUND", "下载任务不存在或不属于当前 MCP 服务", "mcp_download", false)
 }
 
 func (c *Controller) requireAuthorizedProfile(ctx context.Context, profileID string) error {

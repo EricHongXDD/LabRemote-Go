@@ -24,23 +24,25 @@ type Status struct {
 }
 
 type Controller struct {
-	core       CoreService
-	secrets    secrets.Store
-	audit      *Auditor
-	mu         sync.Mutex
-	server     *http.Server
-	listener   net.Listener
-	port       int
-	execSlots  chan struct{}
-	sessionMu  sync.Mutex
-	sessions   map[string]struct{}
-	uploadMu   sync.Mutex
-	uploadJobs map[string]string
+	core         CoreService
+	secrets      secrets.Store
+	audit        *Auditor
+	mu           sync.Mutex
+	server       *http.Server
+	listener     net.Listener
+	port         int
+	execSlots    chan struct{}
+	sessionMu    sync.Mutex
+	sessions     map[string]struct{}
+	uploadMu     sync.Mutex
+	uploadJobs   map[string]string
+	downloadMu   sync.Mutex
+	downloadJobs map[string]string
 }
 
 func NewController(core CoreService, secretStore secrets.Store, auditor *Auditor) *Controller {
 	return &Controller{
-		core: core, secrets: secretStore, audit: auditor, execSlots: make(chan struct{}, 4), sessions: make(map[string]struct{}), uploadJobs: make(map[string]string),
+		core: core, secrets: secretStore, audit: auditor, execSlots: make(chan struct{}, 4), sessions: make(map[string]struct{}), uploadJobs: make(map[string]string), downloadJobs: make(map[string]string),
 	}
 }
 
@@ -61,7 +63,7 @@ func (c *Controller) Start(ctx context.Context, port int) (Status, error) {
 	if err != nil {
 		return Status{}, model.NewAppError("MCP_BUSY", "MCP 本机端口无法监听", "mcp_start", true).WithDetails(map[string]any{"port": port})
 	}
-	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "LabRemote", Version: "1.1.0"}, nil)
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "LabRemote", Version: "1.2.0"}, nil)
 	addTools(mcpServer, c)
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer }, nil)
 	mux := http.NewServeMux()
@@ -112,6 +114,14 @@ func (c *Controller) Stop(ctx context.Context) error {
 	c.uploadJobs = make(map[string]string)
 	c.uploadMu.Unlock()
 	c.core.CloseMCPUploads(ctx, jobIDs)
+	c.downloadMu.Lock()
+	downloadJobIDs := make([]string, 0, len(c.downloadJobs))
+	for jobID := range c.downloadJobs {
+		downloadJobIDs = append(downloadJobIDs, jobID)
+	}
+	c.downloadJobs = make(map[string]string)
+	c.downloadMu.Unlock()
+	c.core.CloseMCPDownloads(ctx, downloadJobIDs)
 	c.core.CloseMCPSessions(ctx)
 	c.sessionMu.Lock()
 	c.sessions = make(map[string]struct{})

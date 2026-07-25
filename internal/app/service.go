@@ -776,6 +776,57 @@ func (s *Service) CloseMCPUploads(_ context.Context, jobIDs []string) {
 	}
 }
 
+func (s *Service) MCPStartDownload(ctx context.Context, request model.DownloadRequest) (model.DownloadProgress, error) {
+	value, err := s.profiles.Get(ctx, request.ProfileID)
+	if err != nil {
+		return model.DownloadProgress{}, err
+	}
+	if err := policy.RequireFileDownload(value); err != nil {
+		return model.DownloadProgress{}, err
+	}
+	if err := s.EnsureConnected(ctx, request.ProfileID); err != nil {
+		return model.DownloadProgress{}, err
+	}
+	// MCP 工具调用返回后 HTTP 请求上下文会结束，下载任务必须继续运行。
+	return s.ssh.StartDownload(context.WithoutCancel(ctx), request)
+}
+
+func (s *Service) MCPDownloadStatus(ctx context.Context, jobID string) (model.DownloadProgress, error) {
+	progress, err := s.ssh.DownloadStatus(jobID)
+	if err != nil {
+		return model.DownloadProgress{}, err
+	}
+	value, err := s.profiles.Get(ctx, progress.ProfileID)
+	if err != nil {
+		return model.DownloadProgress{}, err
+	}
+	if err := policy.RequireFileDownload(value); err != nil {
+		return model.DownloadProgress{}, err
+	}
+	return progress, nil
+}
+
+func (s *Service) MCPCancelDownload(ctx context.Context, jobID string) error {
+	progress, err := s.ssh.DownloadStatus(jobID)
+	if err != nil {
+		return err
+	}
+	value, err := s.profiles.Get(ctx, progress.ProfileID)
+	if err != nil {
+		return err
+	}
+	if err := policy.RequireFileDownload(value); err != nil {
+		return err
+	}
+	return s.ssh.CancelDownload(jobID)
+}
+
+func (s *Service) CloseMCPDownloads(_ context.Context, jobIDs []string) {
+	for _, jobID := range jobIDs {
+		_ = s.ssh.CancelDownload(jobID)
+	}
+}
+
 func (s *Service) MCPOpenSession(ctx context.Context, profileID string, cols, rows int) (string, error) {
 	value, err := s.profiles.Get(ctx, profileID)
 	if err != nil {

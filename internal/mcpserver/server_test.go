@@ -12,14 +12,19 @@ import (
 )
 
 type lifecycleCore struct {
-	uiSessions      int
-	mcpClosed       int
-	profiles        []model.ConnectionProfile
-	uploadRequest   model.UploadRequest
-	uploadProgress  model.UploadProgress
-	uploadCancelled string
-	closedUploads   []string
-	uploadStatusErr error
+	uiSessions        int
+	mcpClosed         int
+	profiles          []model.ConnectionProfile
+	uploadRequest     model.UploadRequest
+	uploadProgress    model.UploadProgress
+	uploadCancelled   string
+	closedUploads     []string
+	uploadStatusErr   error
+	downloadRequest   model.DownloadRequest
+	downloadProgress  model.DownloadProgress
+	downloadCancelled string
+	closedDownloads   []string
+	downloadStatusErr error
 }
 
 func (c *lifecycleCore) MCPProfiles(context.Context) ([]model.ConnectionProfile, error) {
@@ -58,6 +63,23 @@ func (c *lifecycleCore) MCPCancelUpload(_ context.Context, jobID string) error {
 }
 func (c *lifecycleCore) CloseMCPUploads(_ context.Context, jobIDs []string) {
 	c.closedUploads = append(c.closedUploads, jobIDs...)
+}
+func (c *lifecycleCore) MCPStartDownload(_ context.Context, request model.DownloadRequest) (model.DownloadProgress, error) {
+	c.downloadRequest = request
+	if c.downloadProgress.JobID == "" {
+		c.downloadProgress = model.DownloadProgress{JobID: "download-mcp-test", ProfileID: request.ProfileID, State: model.DownloadQueued}
+	}
+	return c.downloadProgress, nil
+}
+func (c *lifecycleCore) MCPDownloadStatus(context.Context, string) (model.DownloadProgress, error) {
+	return c.downloadProgress, c.downloadStatusErr
+}
+func (c *lifecycleCore) MCPCancelDownload(_ context.Context, jobID string) error {
+	c.downloadCancelled = jobID
+	return nil
+}
+func (c *lifecycleCore) CloseMCPDownloads(_ context.Context, jobIDs []string) {
+	c.closedDownloads = append(c.closedDownloads, jobIDs...)
 }
 func (c *lifecycleCore) CloseMCPSessions(context.Context) { c.mcpClosed++ }
 
@@ -111,6 +133,7 @@ func TestAIGuideMarkdownContainsConfigurationToolsAndAuthorizedProfiles(t *testi
 			AllowExec:         true,
 			AllowInteractive:  true,
 			AllowFileUpload:   true,
+			AllowFileDownload: true,
 			AllowDisconnect:   false,
 		},
 	}
@@ -137,6 +160,7 @@ func TestAIGuideMarkdownContainsConfigurationToolsAndAuthorizedProfiles(t *testi
 		"profiles_list", "connection_status", "vpn_connect", "vpn_disconnect", "ssh_exec",
 		"ssh_session_open", "ssh_session_write", "ssh_session_read", "ssh_session_resize", "ssh_session_close",
 		"file_upload_start", "file_upload_status", "file_upload_cancel", "文件上传",
+		"file_download_start", "file_download_status", "file_download_cancel", "文件下载",
 		"data_base64", "cursor", "exit_code", "truncated", "Bearer Token",
 	} {
 		if !strings.Contains(guide, expected) {

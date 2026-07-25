@@ -2,7 +2,7 @@
 
 ## 1. 功能与边界
 
-LabRemote 在桌面程序内提供一个本机 Streamable HTTP MCP 服务，让支持 MCP 的客户端通过已保存的连接配置建立“隔离隧道 + SSH”或“仅 SSH”连接、查询状态、执行 SSH 命令、操作 MCP 专属交互终端，或把本机文件上传到指定远端目录。
+LabRemote 在桌面程序内提供一个本机 Streamable HTTP MCP 服务，让支持 MCP 的客户端通过已保存的连接配置建立“隔离隧道 + SSH”或“仅 SSH”连接、查询状态、执行 SSH 命令、操作 MCP 专属交互终端，以及在本机和远端之间异步上传、下载文件或目录。
 
 MCP 服务具有以下边界：
 
@@ -11,7 +11,7 @@ MCP 服务具有以下边界：
 - 所有请求必须携带界面生成的 Bearer Token；
 - 只显示明确授权给 MCP 的连接配置；
 - 隧道密码、SSH 密码、私钥文件路径、私钥口令和服务器密钥不会作为 MCP 参数或返回值出现；
-- 当前 MCP 提供连接、命令、交互终端和异步文件上传工具；暂不提供 MCP 下载工具，下载请使用 LabRemote 图形界面的“文件传输”窗口；
+- 当前 MCP 提供连接、命令、交互终端和异步文件上传、下载工具；
 - 工具名中的 `vpn_connect`、`vpn_disconnect` 是兼容名称：`isolated_tunnel` 配置操作进程内 SoftEther 隔离隧道和 SSH，`direct_ssh` 配置只操作直接 SSH 连接；都不会连接或修改系统 VPN。
 
 ## 2. 首次启用
@@ -32,6 +32,7 @@ MCP 服务具有以下边界：
 | 允许执行非交互命令 | 允许执行非交互 SSH 命令 | `ssh_exec` |
 | 允许创建交互会话 | 允许创建和操作 MCP 专属 PTY | `ssh_session_open/write/read/resize/close` |
 | 允许上传本地文件 | 允许把 LabRemote 所在电脑上的文件或目录上传到指定远端目录 | `file_upload_start/status/cancel` |
+| 允许下载文件到本机 | 允许把指定远端文件或目录下载到 LabRemote 所在电脑的已存在目录 | `file_download_start/status/cancel` |
 | 允许断开连接 | 允许请求断开 SSH 与可选隔离隧道 | `vpn_disconnect` |
 
 建议只勾选实际需要的最小权限。仅打开全局 MCP 开关不会自动授权任何连接。
@@ -47,8 +48,8 @@ MCP 服务具有以下边界：
 
 - 当前 Streamable HTTP 地址和带 Bearer Token 的客户端配置；
 - 当前明确授权给 MCP 的连接 ID、SSH 目标和能力；
-- 13 个 MCP 工具的用途、关键参数与限制；
-- 非交互命令、交互 PTY 和异步文件上传的推荐调用流程；
+- 16 个 MCP 工具的用途、关键参数与限制；
+- 非交互命令、交互 PTY 和异步文件上传、下载的推荐调用流程；
 - Base64 编码、增量读取 cursor、退出码和截断处理规则；
 - 高风险终端操作的确认要求、错误处理和会话清理规范。
 
@@ -129,7 +130,8 @@ Token 等同于本机 MCP 访问凭据：
       "connection_mode": "direct_ssh",
       "vpn_status": "not_required",
       "ssh_status": "connected",
-      "file_upload_allowed": true
+      "file_upload_allowed": true,
+      "file_download_allowed": true
     }
   ]
 }
@@ -366,6 +368,52 @@ MCP 工具不能读取、写入、缩放或关闭图形界面创建的终端。�
 
 成功返回 `{"ok":true}`。取消后安全分片会保留，以便用户随后使用相同来源、目标和 `resume=true` 续传。关闭 MCP 或重新生成 Token 也会取消 MCP 自有上传，但不会取消图形界面传输任务。
 
+### 5.14 `file_download_start`
+
+异步下载 SSH 服务器上的文件或目录到 LabRemote 所在电脑。必须启用“允许下载文件到本机”。调用会自动建立所需 SSH 连接，本机目标目录必须已经存在。
+
+```json
+{
+  "profile_id": "profile-id",
+  "remote_paths": [
+    "/srv/results/report.csv",
+    "~/result-folder"
+  ],
+  "local_directory": "C:\\Users\\example\\Downloads",
+  "overwrite": false,
+  "resume": true
+}
+```
+
+- `remote_paths` 必须包含 1-32 个远端文件或目录路径，单项最多 4096 字节、总计最多 32768 字节；支持绝对路径、`~` 和相对 SSH 主目录的路径；
+- `local_directory` 是 LabRemote 所在电脑上已经存在的绝对目录，不是 AI 沙箱或远端服务器路径，最多 4096 字节；
+- `overwrite` 默认 `false`。本机存在同名目标时会在传输前拒绝，只有用户明确同意覆盖后才应改为 `true`；
+- `resume` 默认 `false`。设为 `true` 时可复用来源和目标匹配的安全分片；
+- 文件夹会递归下载并保留空目录，不跟随远端符号链接；
+- 每个 Profile 同时最多一个下载任务，任务内部最多并行处理 3 个文件，单个大文件会使用并发 SFTP 请求。
+
+成功后立即返回 `job_id` 和初始进度，不等待全部文件传完。客户端必须保存该 ID 并继续查询状态。
+
+### 5.15 `file_download_status`
+
+查询当前 MCP 服务实例自己创建的下载任务：
+
+```json
+{"job_id":"download-..."}
+```
+
+主要字段与上传进度一致。运行状态为 `queued`、`scanning`、`downloading`，终态为 `completed`、`failed` 或 `cancelled`。建议以秒级间隔轮询。MCP 不能查询图形界面创建的下载任务；即使猜到其他任务 ID 也会返回 `MCP_DOWNLOAD_NOT_FOUND`。
+
+### 5.16 `file_download_cancel`
+
+取消当前 MCP 服务实例自己创建的下载任务：
+
+```json
+{"job_id":"download-..."}
+```
+
+成功返回 `{"ok":true}`。取消后安全分片会保留，以便用户随后使用相同来源、目标和 `resume=true` 续传。关闭 MCP 或重新生成 Token 也会取消 MCP 自有下载，但不会取消图形界面传输任务。
+
 ## 6. 常用工作流
 
 ### 6.1 执行一次命令
@@ -396,6 +444,14 @@ MCP 工具不能读取、写入、缩放或关闭图形界面创建的终端。�
 4. 保存 `job_id`，用 `file_upload_status` 轮询到终态；
 5. 展示传输字节、已续传字节和错误信息；用户取消时调用 `file_upload_cancel`。
 
+### 6.4 下载文件或目录
+
+1. 与用户确认远端路径、目标连接和本机保存目录；
+2. `profiles_list` 选择 `file_download_allowed=true` 的 Profile；
+3. `file_download_start` 启动任务，默认保留 `overwrite=false`；
+4. 保存 `job_id`，用 `file_download_status` 轮询到终态；
+5. 展示传输字节、已续传字节和错误信息；用户取消时调用 `file_download_cancel`。
+
 ## 7. 安全设计
 
 - 服务固定监听 `127.0.0.1`，并验证请求来源地址必须为回环地址；
@@ -407,10 +463,11 @@ MCP 工具不能读取、写入、缩放或关闭图形界面创建的终端。�
 - HTTP 请求头最大 16 KiB，读写和空闲超时均受限；
 - 最多 4 个并发命令、8 个 MCP 交互会话；
 - 每个交互会话使用 2 MiB 有界环形缓冲区；
-- 审计日志只保存工具名、`profile_id`、结果、退出码、耗时和命令 SHA-256，不保存命令正文、stdout、stderr 或本地文件路径；
+- 审计日志只保存工具名、`profile_id`、结果、退出码、耗时和命令 SHA-256，不保存命令正文、stdout、stderr、本地路径或远端传输路径；
 - MCP 不能操作图形界面终端，也不能在图形终端存在时断开对应隔离隧道。
-- MCP 只能查询或取消当前服务实例自己创建的上传任务；所有上传操作还会实时复查 Profile 的独立文件上传权限。
+- MCP 只能查询或取消当前服务实例自己创建的上传、下载任务；所有传输操作还会实时复查 Profile 对应的独立文件传输权限。
 - 文件上传权限允许 MCP 读取 LabRemote 进程有权读取的本机文件并发送到远端，属于高敏感权限；只应授予受信任客户端，并且每次只上传用户明确指定的路径。
+- 文件下载权限允许 MCP 将远端内容写入 LabRemote 进程有权写入的本机目录，同样属于高敏感权限；只应授予受信任客户端，并且每次只下载到用户明确指定的目录。
 
 本机其他进程如果获得 Token，仍可能调用 MCP。回环监听不能替代 Token 保密和 Profile 最小授权。
 
@@ -418,10 +475,10 @@ MCP 工具不能读取、写入、缩放或关闭图形界面创建的终端。�
 
 需要立即停止访问时，可按影响范围选择：
 
-1. 关闭全局 MCP 开关：停止服务、取消 MCP 自有上传并关闭全部 MCP 交互会话；
+1. 关闭全局 MCP 开关：停止服务、取消 MCP 自有上传和下载并关闭全部 MCP 交互会话；
 2. 重新生成令牌：使所有使用旧 Token 的客户端立即失效；
 3. 编辑连接并关闭“允许 MCP 看到此配置”：仅撤销该 Profile；
-4. 单独关闭命令、交互、文件上传或断开权限：保留未撤销的能力；
+4. 单独关闭命令、交互、文件上传、文件下载或断开权限：保留未撤销的能力；
 5. 退出 LabRemote：MCP 服务随桌面进程停止。
 
 相关文件位置：
@@ -444,7 +501,7 @@ MCP 工具不能读取、写入、缩放或关闭图形界面创建的终端。�
 | HTTP 403 | 请求不是来自回环地址，或 Host/Origin 不符合限制 | 使用复制出的 `127.0.0.1` 地址，不要通过代理或端口转发 |
 | HTTP 429 | 一分钟内超过 120 个请求 | 等待 `Retry-After` 指示的时间，降低轮询频率 |
 | `MCP_PROFILE_FORBIDDEN` | Profile 未授权给 MCP，或 `profile_id` 不正确 | 编辑连接开启 MCP 可见权限，再通过 `profiles_list` 获取 ID |
-| `MCP_TOOL_FORBIDDEN` | 未授予命令、交互、文件上传或断开权限；或存在图形终端时请求断开 | 调整最小必要权限，或由用户在图形界面处理活动终端 |
+| `MCP_TOOL_FORBIDDEN` | 未授予命令、交互、文件上传、文件下载或断开权限；或存在图形终端时请求断开 | 调整最小必要权限，或由用户在图形界面处理活动终端 |
 | `TUNNEL_CERT_UNKNOWN` / `SSH_HOST_KEY_UNKNOWN` | 尚未在图形界面确认服务器指纹 | 先在图形界面连接并核对、确认指纹 |
 | `TUNNEL_CERT_CHANGED` / `SSH_HOST_KEY_CHANGED` | 已固定指纹发生变化 | 停止连接并联系管理员核实，不要绕过 |
 | `SSH_AUTH_FAILED` | 用户名、密码或服务器公钥授权不匹配 | 在连接编辑页核对认证方式并更新 SSH 凭据 |
@@ -455,7 +512,11 @@ MCP 工具不能读取、写入、缩放或关闭图形界面创建的终端。�
 | `MCP_UPLOAD_INVALID` | 本机路径不是绝对路径、远端目录为空或路径数量/长度超限 | 修正参数后重新调用 `file_upload_start` |
 | `MCP_UPLOAD_NOT_FOUND` | 上传 ID 不存在，或不是当前 MCP 服务创建的任务 | 丢弃旧 ID，只使用本次 `file_upload_start` 返回的 `job_id` |
 | `UPLOAD_BUSY` | 同一 Profile 已有上传任务 | 等待当前任务结束，或取消 MCP 自有任务后重试 |
-| `UPLOAD_TARGET_EXISTS` | 远端存在同名目标且未允许覆盖 | 请用户确认；只有明确同意后才设置 `overwrite=true` |
+| `UPLOAD_CONFLICT` | 远端存在同名目标且未允许覆盖 | 请用户确认；只有明确同意后才设置 `overwrite=true` |
+| `MCP_DOWNLOAD_INVALID` | 远端路径、本机绝对目录或路径数量/长度不符合要求 | 修正参数后重新调用 `file_download_start` |
+| `MCP_DOWNLOAD_NOT_FOUND` | 下载 ID 不存在，或不是当前 MCP 服务创建的任务 | 丢弃旧 ID，只使用本次 `file_download_start` 返回的 `job_id` |
+| `DOWNLOAD_BUSY` | 同一 Profile 已有下载任务 | 等待当前任务结束，或取消 MCP 自有任务后重试 |
+| `DOWNLOAD_CONFLICT` | 本机存在同名目标且未允许覆盖 | 请用户确认；只有明确同意后才设置 `overwrite=true` |
 | `truncated=true` | 命令输出超限，或交互输出已覆盖旧游标 | 提高允许范围内的输出限制、及时增量读取，或把输出写入远端文件后分段查看 |
 
 ## 10. 部署建议
