@@ -6,6 +6,10 @@ describe('validateProfile', () => {
     expect(emptyProfile().mcp_policy.allow_file_upload).toBe(false)
   })
 
+  it('新连接默认不向 MCP 开放文件下载', () => {
+    expect(emptyProfile().mcp_policy.allow_file_download).toBe(false)
+  })
+
   it('新建配置时要求隧道密码和 SSH 密码', () => {
     const value = emptyProfile()
     value.display_name = '实验室'

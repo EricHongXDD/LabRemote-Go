@@ -28,6 +28,7 @@ export function emptyProfile(): ConnectionProfile {
       allow_exec: false,
       allow_interactive: false,
       allow_file_upload: false,
+      allow_file_download: false,
       allow_disconnect: false,
     },
     created_at: '0001-01-01T00:00:00Z',
