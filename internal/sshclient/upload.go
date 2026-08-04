@@ -20,6 +20,13 @@ import (
 	"github.com/pkg/sftp"
 )
 
+const (
+	// SFTP 标准要求服务器支持 32 KiB 数据包；64 个在途请求可填满约 2 MiB 的 SSH 通道窗口。
+	uploadSFTPPacketSize     int64 = 32 * 1024
+	uploadSFTPPipelineBudget       = 64
+	uploadProgressBatchBytes int64 = 256 * 1024
+)
+
 type uploadJob struct {
 	request  model.UploadRequest
 	ctx      context.Context
@@ -204,7 +211,11 @@ func (m *Manager) runUpload(job *uploadJob) {
 		m.finishUpload(job, model.NewAppError("SSH_SESSION_FAILED", "SSH 连接已断开", "file_upload", true))
 		return
 	}
-	sftpClient, err := sftp.NewClient(client, sftp.UseConcurrentWrites(true))
+	sftpClient, err := sftp.NewClient(
+		client,
+		sftp.UseConcurrentWrites(true),
+		sftp.MaxConcurrentRequestsPerFile(uploadSFTPPipelineBudget),
+	)
 	if err != nil {
 		m.finishUpload(job, model.NewAppError("SFTP_UNAVAILABLE", "远端 SSH 服务未提供 SFTP 子系统", "file_upload", false))
 		return
@@ -258,7 +269,7 @@ func (m *Manager) runUpload(job *uploadJob) {
 					progress.CurrentItem = entry.displayName
 				})
 				destination := path.Join(remoteRoot, entry.relativePath)
-				written, uploadErr := uploadFile(transferContext, sftpClient, entry, destination, job.request.Overwrite, job.request.Resume, func(delta int64) {
+				written, uploadErr := uploadFile(transferContext, sftpClient, entry, destination, job.request.Overwrite, job.request.Resume, fileConcurrency, func(delta int64) {
 					m.updateUpload(job, false, func(progress *model.UploadProgress) {
 						progress.BytesTransferred += delta
 					})
@@ -541,6 +552,7 @@ func uploadFile(
 	destination string,
 	overwrite bool,
 	resume bool,
+	parallelFiles int,
 	onBytes func(int64),
 	onResume func(int64),
 ) (int64, error) {
@@ -606,7 +618,9 @@ func uploadFile(
 		}
 	}
 	reader := &uploadProgressReader{ctx: ctx, reader: localFile, onBytes: onBytes}
-	writtenNow, copyErr := remoteFile.ReadFromWithConcurrency(reader, 8)
+	requestConcurrency := uploadRequestConcurrency(entry.size-resumeOffset, parallelFiles)
+	writtenNow, copyErr := remoteFile.ReadFromWithConcurrency(reader, requestConcurrency)
+	reader.flush()
 	written := resumeOffset + writtenNow
 	if copyErr != nil {
 		// 并发写入出错时，SFTP 文件偏移量是可安全保留的最早位置。
@@ -679,6 +693,7 @@ type uploadProgressReader struct {
 	ctx     context.Context
 	reader  io.Reader
 	onBytes func(int64)
+	pending int64
 }
 
 func (reader *uploadProgressReader) Read(buffer []byte) (int, error) {
@@ -686,10 +701,41 @@ func (reader *uploadProgressReader) Read(buffer []byte) (int, error) {
 		return 0, err
 	}
 	count, err := reader.reader.Read(buffer)
-	if count > 0 && reader.onBytes != nil {
-		reader.onBytes(int64(count))
+	if count > 0 {
+		reader.pending += int64(count)
+		if reader.pending >= uploadProgressBatchBytes {
+			reader.flush()
+		}
+	}
+	if err != nil {
+		reader.flush()
 	}
 	return count, err
+}
+
+func (reader *uploadProgressReader) flush() {
+	if reader.pending <= 0 {
+		return
+	}
+	if reader.onBytes != nil {
+		reader.onBytes(reader.pending)
+	}
+	reader.pending = 0
+}
+
+func uploadRequestConcurrency(remainingBytes int64, parallelFiles int) int {
+	if parallelFiles < 1 {
+		parallelFiles = 1
+	}
+	requestBudget := max(1, uploadSFTPPipelineBudget/parallelFiles)
+	if remainingBytes <= 0 {
+		return 1
+	}
+	packetCount := 1 + (remainingBytes-1)/uploadSFTPPacketSize
+	if packetCount >= int64(requestBudget) {
+		return requestBudget
+	}
+	return int(packetCount)
 }
 
 func resumableUploadPath(localFile *os.File, info os.FileInfo, destination string) (string, string, error) {
