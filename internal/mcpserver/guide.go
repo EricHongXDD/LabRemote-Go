@@ -132,7 +132,7 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("- `ssh_session_write` 单次解码后最多 65536 字节。\n")
 	guide.WriteString("- `ssh_session_read.max_bytes` 单次最大 1 MiB；`wait_ms` 范围为 0-30000。\n")
 	guide.WriteString("- `file_upload_start.local_paths`：1-32 个本机绝对路径，单个最多 4096 字节、总计最多 32768 字节；文件夹会递归上传但不跟随符号链接。\n")
-	guide.WriteString("- 每个 Profile 同时最多一个上传任务；任务内部最多并行处理 3 个文件，单个大文件使用并发 SFTP 请求。\n")
+	guide.WriteString("- 每个 Profile 同时最多一个上传任务；任务内部最多并行处理 3 个文件。大文件上传会按剩余大小和并行文件数自适应使用 1-64 个标准 SFTP 写请求，整个上传任务的总在途请求不超过 64 个（约 2 MiB 数据窗口）。\n")
 	guide.WriteString("- 上传状态依次可能为 `queued`、`scanning`、`uploading`，终态为 `completed`、`failed` 或 `cancelled`。\n")
 	guide.WriteString("- `file_download_start.remote_paths`：1-32 个远端路径，单个最多 4096 字节、总计最多 32768 字节；文件夹会递归下载但不跟随符号链接。\n")
 	guide.WriteString("- `file_download_start.local_directory`：LabRemote 所在电脑上已经存在的绝对目录，最多 4096 字节。\n")

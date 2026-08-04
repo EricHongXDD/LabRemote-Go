@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path"
@@ -123,7 +124,7 @@ func TestUploadFileViaSFTPAndConflictProtection(t *testing.T) {
 		size: info.Size(), modTime: info.ModTime(),
 	}
 	destination := path.Join(root, entry.relativePath)
-	if _, err := uploadFile(context.Background(), client, entry, destination, false, true, nil, nil); err != nil {
+	if _, err := uploadFile(context.Background(), client, entry, destination, false, true, 1, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	plan := uploadPlan{files: []uploadEntry{entry}, totalBytes: entry.size}
@@ -142,7 +143,7 @@ func TestUploadFileViaSFTPAndConflictProtection(t *testing.T) {
 	}
 	entry.size = info.Size()
 	entry.modTime = info.ModTime()
-	if _, err := uploadFile(context.Background(), client, entry, destination, true, true, nil, nil); err != nil {
+	if _, err := uploadFile(context.Background(), client, entry, destination, true, true, 1, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	value, err := os.ReadFile(filepath.Join(remoteRoot, "uploads", "payload.txt"))
@@ -166,7 +167,7 @@ func TestUploadFileViaSFTPAndConflictProtection(t *testing.T) {
 		size: cancelInfo.Size(), modTime: cancelInfo.ModTime(),
 	}
 	cancelContext, cancel := context.WithCancel(context.Background())
-	_, err = uploadFile(cancelContext, client, cancelEntry, path.Join(root, cancelEntry.relativePath), false, true, func(int64) { cancel() }, nil)
+	_, err = uploadFile(cancelContext, client, cancelEntry, path.Join(root, cancelEntry.relativePath), false, true, 1, func(int64) { cancel() }, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("期望取消错误，实际为 %v", err)
 	}
@@ -190,7 +191,7 @@ func TestUploadFileViaSFTPAndConflictProtection(t *testing.T) {
 		t.Fatal("取消后应保留可安全续传的临时文件")
 	}
 	var resumed int64
-	if _, err := uploadFile(context.Background(), client, cancelEntry, path.Join(root, cancelEntry.relativePath), false, true, nil, func(value int64) {
+	if _, err := uploadFile(context.Background(), client, cancelEntry, path.Join(root, cancelEntry.relativePath), false, true, 1, nil, func(value int64) {
 		resumed = value
 	}); err != nil {
 		t.Fatal(err)
@@ -203,5 +204,52 @@ func TestUploadFileViaSFTPAndConflictProtection(t *testing.T) {
 	}
 	if _, err := client.Lstat(path.Join(root, partialName)); !os.IsNotExist(err) {
 		t.Fatalf("续传完成后不应保留临时文件: %v", err)
+	}
+}
+
+func TestUploadRequestConcurrencyUsesBoundedAdaptivePipeline(t *testing.T) {
+	tests := []struct {
+		name          string
+		remaining     int64
+		parallelFiles int
+		want          int
+	}{
+		{name: "空文件", remaining: 0, parallelFiles: 1, want: 1},
+		{name: "单个标准数据包", remaining: uploadSFTPPacketSize, parallelFiles: 1, want: 1},
+		{name: "一兆字节文件", remaining: 1024 * 1024, parallelFiles: 1, want: 32},
+		{name: "单个大文件使用完整窗口", remaining: 128 * 1024 * 1024, parallelFiles: 1, want: 64},
+		{name: "极大文件不会发生整数溢出", remaining: int64(^uint64(0) >> 1), parallelFiles: 1, want: 64},
+		{name: "两个大文件平分窗口", remaining: 128 * 1024 * 1024, parallelFiles: 2, want: 32},
+		{name: "三个大文件限制总在途量", remaining: 128 * 1024 * 1024, parallelFiles: 3, want: 21},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := uploadRequestConcurrency(test.remaining, test.parallelFiles); got != test.want {
+				t.Fatalf("并发请求数 = %d，期望 %d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestUploadProgressReaderBatchesCallbacksAndKeepsCancellationResponsive(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var reported int64
+	callbackCount := 0
+	reader := &uploadProgressReader{
+		ctx:    ctx,
+		reader: bytes.NewReader(bytes.Repeat([]byte("x"), int(uploadProgressBatchBytes*4))),
+		onBytes: func(delta int64) {
+			reported += delta
+			callbackCount++
+			cancel()
+		},
+	}
+	written, err := io.Copy(io.Discard, reader)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("期望批次回调后及时取消，实际错误为 %v", err)
+	}
+	if written != uploadProgressBatchBytes || reported != uploadProgressBatchBytes || callbackCount != 1 {
+		t.Fatalf("批量进度异常：written=%d reported=%d callbacks=%d", written, reported, callbackCount)
 	}
 }
