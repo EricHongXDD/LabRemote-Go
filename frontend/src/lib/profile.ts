@@ -36,6 +36,18 @@ export function emptyProfile(): ConnectionProfile {
   }
 }
 
+export function createProfileCopyDraft(source: ConnectionProfile): ConnectionProfile {
+  const value = structuredClone(source)
+  value.id = ''
+  value.display_name = ''
+  value.vpn.connection_name = ''
+  value.vpn.credential_ref = ''
+  value.ssh.credential_ref = ''
+  value.created_at = '0001-01-01T00:00:00Z'
+  value.updated_at = '0001-01-01T00:00:00Z'
+  return value
+}
+
 export function connectionMode(profile: ConnectionProfile): ConnectionMode {
   return profile.connection_mode === 'direct_ssh' ? 'direct_ssh' : 'isolated_tunnel'
 }

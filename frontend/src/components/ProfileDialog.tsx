@@ -5,6 +5,7 @@ import {parseAppError} from '../lib/errors'
 
 type Props = {
   value: ConnectionProfile | null
+  copySourceProfileID: string
   onCancel: () => void
   onSave: (request: SaveProfileRequest) => Promise<void>
   onTestTunnel: (request: TestConnectionRequest) => Promise<ConnectionTestResult>
@@ -16,7 +17,7 @@ type Props = {
 type TestKind = 'tunnel' | 'ssh'
 type TestFeedback = {state: 'success' | 'error'; message: string}
 
-export default function ProfileDialog({value, onCancel, onSave, onTestTunnel, onTestSSH, onSelectSSHPrivateKey, onClearSecret}: Props) {
+export default function ProfileDialog({value, copySourceProfileID, onCancel, onSave, onTestTunnel, onTestSSH, onSelectSSHPrivateKey, onClearSecret}: Props) {
   const [profile, setProfile] = useState<ConnectionProfile>(emptyProfile())
   const [vpnPassword, setVPNPassword] = useState('')
   const [sshPassword, setSSHPassword] = useState('')
@@ -28,6 +29,11 @@ export default function ProfileDialog({value, onCancel, onSave, onTestTunnel, on
   const [testFeedback, setTestFeedback] = useState<Partial<Record<TestKind, TestFeedback>>>({})
   const isTunnel = usesIsolatedTunnel(profile)
   const isPrivateKey = sshAuthMethod(profile) === 'private_key'
+  const isCopy = Boolean(copySourceProfileID)
+  const isExisting = Boolean(value?.id) && !isCopy
+  const canReuseTunnelCredential = Boolean(value && usesIsolatedTunnel(value) && isTunnel)
+  const canReuseSSHPassword = Boolean(value && sshAuthMethod(value) === 'password' && !isPrivateKey)
+  const canReuseSSHPrivateKey = Boolean(value && sshAuthMethod(value) === 'private_key' && isPrivateKey)
 
   useEffect(() => {
     const next = value ? structuredClone(value) : emptyProfile()
@@ -41,7 +47,7 @@ export default function ProfileDialog({value, onCancel, onSave, onTestTunnel, on
     setError('')
     setTesting(null)
     setTestFeedback({})
-  }, [value])
+  }, [value, copySourceProfileID])
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -100,27 +106,30 @@ export default function ProfileDialog({value, onCancel, onSave, onTestTunnel, on
     }
   }
 
-  const testRequest = (): TestConnectionRequest => ({
-    profile: normalizedProfile(),
-    vpn_password: vpnPassword,
-    ssh_password: sshPassword,
-    ssh_private_key_path: sshPrivateKeyPath,
-    ssh_private_key_passphrase: sshPrivateKeyPassphrase,
-  })
+  const testRequest = (): TestConnectionRequest => {
+    const normalized = normalizedProfile()
+    return {
+      profile: copySourceProfileID ? {...normalized, id: copySourceProfileID} : normalized,
+      vpn_password: vpnPassword,
+      ssh_password: sshPassword,
+      ssh_private_key_path: sshPrivateKeyPath,
+      ssh_private_key_passphrase: sshPrivateKeyPassphrase,
+    }
+  }
 
   const validateTunnelTest = (): string | null => {
     if (!profile.display_name.trim()) return '请先填写连接名称'
     if (!profile.vpn.server_address.trim()) return '请先填写 SoftEther 服务器'
     if (!profile.vpn.username.trim()) return '请先填写隧道用户名'
-    if ((!value || !usesIsolatedTunnel(value)) && !vpnPassword) return '请先填写隧道密码'
+    if (!canReuseTunnelCredential && !vpnPassword) return '请先填写隧道密码'
     return null
   }
 
   const validateSSHTest = (): string | null => {
-    const validation = validateProfile(normalizedProfile(), !value, {vpnPassword, sshPassword, sshPrivateKeyPath})
+    const validation = validateProfile(normalizedProfile(), !value && !copySourceProfileID, {vpnPassword, sshPassword, sshPrivateKeyPath})
     if (validation) return validation
-    if (isPrivateKey && (!value || sshAuthMethod(value) !== 'private_key') && !sshPrivateKeyPath) return '请先选择 SSH 私钥文件'
-    if (!isPrivateKey && (!value || sshAuthMethod(value) !== 'password') && !sshPassword) return '请先填写 SSH 密码'
+    if (isPrivateKey && !canReuseSSHPrivateKey && !sshPrivateKeyPath) return '请先选择 SSH 私钥文件'
+    if (!isPrivateKey && !canReuseSSHPassword && !sshPassword) return '请先填写 SSH 密码'
     return null
   }
 
@@ -149,19 +158,19 @@ export default function ProfileDialog({value, onCancel, onSave, onTestTunnel, on
 
   const submit = async () => {
     const normalized = normalizedProfile()
-    if (isTunnel && (!value || !usesIsolatedTunnel(value)) && !vpnPassword) {
+    if (isTunnel && !canReuseTunnelCredential && !vpnPassword) {
       setError('切换为隔离隧道连接时必须填写隧道密码')
       return
     }
-    if (!isPrivateKey && (!value || sshAuthMethod(value) !== 'password') && !sshPassword) {
+    if (!isPrivateKey && !canReuseSSHPassword && !sshPassword) {
       setError('切换为 SSH 密码认证时必须填写 SSH 密码')
       return
     }
-    if (isPrivateKey && (!value || sshAuthMethod(value) !== 'private_key') && !sshPrivateKeyPath) {
+    if (isPrivateKey && !canReuseSSHPrivateKey && !sshPrivateKeyPath) {
       setError('切换为 SSH 私钥认证时必须选择私钥文件')
       return
     }
-    const validationError = validateProfile(normalized, !normalized.id, {vpnPassword, sshPassword, sshPrivateKeyPath})
+    const validationError = validateProfile(normalized, !normalized.id && !copySourceProfileID, {vpnPassword, sshPassword, sshPrivateKeyPath})
     if (validationError) {
       setError(validationError)
       return
@@ -170,6 +179,7 @@ export default function ProfileDialog({value, onCancel, onSave, onTestTunnel, on
     try {
       await onSave({
         profile: normalized,
+        copy_from_profile_id: copySourceProfileID,
         vpn_pre_shared_key: '',
         vpn_password: vpnPassword,
         ssh_password: sshPassword,
@@ -189,12 +199,12 @@ export default function ProfileDialog({value, onCancel, onSave, onTestTunnel, on
   }
 
   return (
-    <div className="modal-backdrop profile-backdrop" role="dialog" aria-modal="true" aria-label={value ? '编辑连接' : '新建连接'}>
+    <div className="modal-backdrop profile-backdrop" role="dialog" aria-modal="true" aria-label={isCopy ? '复制连接' : (isExisting ? '编辑连接' : '新建连接')}>
       <div className="profile-dialog">
         <div className="dialog-titlebar">
           <div>
             <span className="eyebrow">CONNECTION PROFILE</span>
-            <h2>{value ? '编辑连接' : '新建连接'}</h2>
+            <h2>{isCopy ? '复制连接' : (isExisting ? '编辑连接' : '新建连接')}</h2>
           </div>
           <button className="icon-button" disabled={saving || Boolean(testing)} onClick={onCancel} aria-label="关闭">×</button>
         </div>
@@ -219,7 +229,7 @@ export default function ProfileDialog({value, onCancel, onSave, onTestTunnel, on
             <label>传输类型<select value={profile.vpn.type || 'softether'} onChange={event => updateVPN('type', event.target.value)}><option value="softether">SoftEther 原生协议（进程内隔离）</option></select></label>
             <div className="form-row two-columns">
               <label>用户名<input value={profile.vpn.username} onChange={event => updateVPN('username', event.target.value)} autoComplete="username" /></label>
-              <label>密码<input type="password" value={vpnPassword} placeholder={value && usesIsolatedTunnel(value) ? '留空保留' : '必填'} onChange={event => { setVPNPassword(event.target.value); setTestFeedback({}) }} autoComplete="new-password" />{value && <button type="button" className="clear-secret" onClick={() => onClearSecret(value.id, 'vpn_password')}>清除已保存密码</button>}</label>
+              <label>密码<input type="password" value={vpnPassword} placeholder={canReuseTunnelCredential ? (isCopy ? '留空复制已保存密码' : '留空保留') : '必填'} onChange={event => { setVPNPassword(event.target.value); setTestFeedback({}) }} autoComplete="new-password" />{isExisting && value && <button type="button" className="clear-secret" onClick={() => onClearSecret(value.id, 'vpn_password')}>清除已保存密码</button>}</label>
             </div>
             <div className="connection-test-row">
               <button type="button" className="test-connection-button" disabled={Boolean(testing) || saving} onClick={() => void testConnection('tunnel')}>{testing === 'tunnel' ? '正在测试…' : '测试隔离隧道'}</button>
@@ -239,10 +249,10 @@ export default function ProfileDialog({value, onCancel, onSave, onTestTunnel, on
                 <option value="private_key">私钥文件</option>
               </select></label>
             </div>
-            {!isPrivateKey && <label>SSH 密码<input type="password" value={sshPassword} placeholder={value && sshAuthMethod(value) === 'password' ? '留空保留' : '必填'} onChange={event => { setSSHPassword(event.target.value); setTestFeedback(current => ({...current, ssh: undefined})) }} autoComplete="new-password" />{value && <button type="button" className="clear-secret" onClick={() => onClearSecret(value.id, 'ssh_password')}>清除已保存密码</button>}</label>}
+            {!isPrivateKey && <label>SSH 密码<input type="password" value={sshPassword} placeholder={canReuseSSHPassword ? (isCopy ? '留空复制已保存密码' : '留空保留') : '必填'} onChange={event => { setSSHPassword(event.target.value); setTestFeedback(current => ({...current, ssh: undefined})) }} autoComplete="new-password" />{isExisting && value && <button type="button" className="clear-secret" onClick={() => onClearSecret(value.id, 'ssh_password')}>清除已保存密码</button>}</label>}
             {isPrivateKey && <div className="form-row two-columns ssh-key-fields">
-              <label>私钥文件<div className="private-key-picker"><input readOnly value={sshPrivateKeyPath} placeholder={value && sshAuthMethod(value) === 'private_key' ? '留空保留已保存私钥' : '请选择私钥文件'} /><button type="button" disabled={Boolean(testing) || saving} onClick={() => void selectPrivateKey()}>浏览…</button></div>{value && <button type="button" className="clear-secret" onClick={() => onClearSecret(value.id, 'ssh_private_key')}>清除已保存私钥</button>}</label>
-              <label>私钥口令（可选）<input type="password" value={sshPrivateKeyPassphrase} placeholder={value && sshAuthMethod(value) === 'private_key' ? '留空保留；未加密私钥无需填写' : '仅加密私钥需要'} onChange={event => { setSSHPrivateKeyPassphrase(event.target.value); setTestFeedback(current => ({...current, ssh: undefined})) }} autoComplete="new-password" /></label>
+              <label>私钥文件<div className="private-key-picker"><input readOnly value={sshPrivateKeyPath} placeholder={canReuseSSHPrivateKey ? (isCopy ? '留空复制已保存私钥' : '留空保留已保存私钥') : '请选择私钥文件'} /><button type="button" disabled={Boolean(testing) || saving} onClick={() => void selectPrivateKey()}>浏览…</button></div>{isExisting && value && <button type="button" className="clear-secret" onClick={() => onClearSecret(value.id, 'ssh_private_key')}>清除已保存私钥</button>}</label>
+              <label>私钥口令（可选）<input type="password" value={sshPrivateKeyPassphrase} placeholder={canReuseSSHPrivateKey ? (isCopy ? '留空复制已保存口令' : '留空保留；未加密私钥无需填写') : '仅加密私钥需要'} onChange={event => { setSSHPrivateKeyPassphrase(event.target.value); setTestFeedback(current => ({...current, ssh: undefined})) }} autoComplete="new-password" /></label>
             </div>}
             <div className="connection-test-row">
               <button type="button" className="test-connection-button" disabled={Boolean(testing) || saving} onClick={() => void testConnection('ssh')}>{testing === 'ssh' ? '正在测试…' : '测试 SSH 服务器'}</button>
@@ -264,10 +274,10 @@ export default function ProfileDialog({value, onCancel, onSave, onTestTunnel, on
         </div>
 
         <div className="profile-dialog-footer">
-          <div className={`dialog-feedback ${error ? 'error' : ''}`} aria-live="polite">{error || '认证凭据仅在本机用于测试和保存，不会写入应用日志。'}</div>
+          <div className={`dialog-feedback ${error ? 'error' : ''}`} aria-live="polite">{error || (isCopy ? '连接名称已清空；留空的凭据会从来源连接安全复制，也可以输入新值覆盖。' : '认证凭据仅在本机用于测试和保存，不会写入应用日志。')}</div>
           <div className="dialog-actions">
             <button className="button secondary" disabled={saving || Boolean(testing)} onClick={onCancel}>取消</button>
-            <button className="button primary" onClick={submit} disabled={saving || Boolean(testing)}>{saving ? '保存中…' : '保存连接'}</button>
+            <button className="button primary" onClick={submit} disabled={saving || Boolean(testing)}>{saving ? '保存中…' : (isCopy ? '保存副本' : '保存连接')}</button>
           </div>
         </div>
       </div>

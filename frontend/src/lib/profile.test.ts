@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest'
-import {connectionMode, emptyProfile, sshAuthMethod, validateProfile} from './profile'
+import {connectionMode, createProfileCopyDraft, emptyProfile, sshAuthMethod, validateProfile} from './profile'
 
 describe('validateProfile', () => {
   it('新连接默认不向 MCP 开放本地文件上传', () => {
@@ -57,5 +57,39 @@ describe('validateProfile', () => {
     value.ssh.auth_method = 'private_key'
     expect(validateProfile(value, true, {vpnPassword: '', sshPassword: '', sshPrivateKeyPath: ''})).toContain('私钥')
     expect(validateProfile(value, true, {vpnPassword: '', sshPassword: '', sshPrivateKeyPath: 'C:\\keys\\id_ed25519'})).toBeNull()
+  })
+})
+
+describe('createProfileCopyDraft', () => {
+  it('只清空新连接身份和名称，保留全部可编辑配置且不修改来源', () => {
+    const source = emptyProfile()
+    source.id = 'profile-source'
+    source.display_name = '实验室主机'
+    source.group = '课题组'
+    source.vpn.connection_name = '实验室主机'
+    source.vpn.server_address = 'vpn.example.com'
+    source.vpn.hub_name = 'LAB'
+    source.vpn.server_certificate = 'SHA256:tunnel'
+    source.vpn.username = 'vpn-user'
+    source.vpn.credential_ref = 'LabRemote/profile-source/vpn-password'
+    source.ssh.server_address = '192.168.1.20'
+    source.ssh.username = 'ssh-user'
+    source.ssh.credential_ref = 'LabRemote/profile-source/ssh-password'
+    source.ssh.host_key = 'SHA256:ssh'
+    source.mcp_policy = {...source.mcp_policy, enabled_for_profile: true, allow_exec: true}
+    source.created_at = '2026-08-01T00:00:00Z'
+    source.updated_at = '2026-08-02T00:00:00Z'
+
+    const copy = createProfileCopyDraft(source)
+
+    expect(copy.id).toBe('')
+    expect(copy.display_name).toBe('')
+    expect(copy.vpn.connection_name).toBe('')
+    expect(copy.vpn.credential_ref).toBe('')
+    expect(copy.ssh.credential_ref).toBe('')
+    expect(copy.created_at).toBe('0001-01-01T00:00:00Z')
+    expect(copy.updated_at).toBe('0001-01-01T00:00:00Z')
+    expect({...copy, id: source.id, display_name: source.display_name, vpn: {...copy.vpn, connection_name: source.vpn.connection_name, credential_ref: source.vpn.credential_ref}, ssh: {...copy.ssh, credential_ref: source.ssh.credential_ref}, created_at: source.created_at, updated_at: source.updated_at}).toEqual(source)
+    expect(source.display_name).toBe('实验室主机')
   })
 })
