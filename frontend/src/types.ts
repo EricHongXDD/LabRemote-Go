@@ -41,6 +41,7 @@ export type ConnectionProfile = {
 
 export type SaveProfileRequest = {
   profile: ConnectionProfile
+  copy_from_profile_id: string
   vpn_pre_shared_key: string
   vpn_password: string
   ssh_password: string

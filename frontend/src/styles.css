@@ -55,7 +55,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .connection-panel-header { padding: 13px 12px 11px; border-bottom: 1px solid var(--line); background: linear-gradient(180deg, #101c2c, #0c1726); }
 .connection-panel-title { display: flex; align-items: center; justify-content: space-between; color: #c3d0dc; font-size: 11px; font-weight: 800; letter-spacing: .7px; }
 .connection-panel-title em { min-width: 23px; padding: 2px 7px; color: #8091a6; text-align: center; font: 9px Consolas, monospace; border-radius: 10px; background: #1a293b; }
-.profile-actions { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 6px; margin-top: 11px; }
+.profile-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 11px; }
 .profile-actions button { min-width: 0; height: 30px; padding: 0 7px; color: #9dafc1; border: 1px solid #263b52; border-radius: 6px; background: #101d2d; cursor: pointer; font-size: 10px; }
 .profile-actions button:hover:not(:disabled) { color: #eef5fb; border-color: #3b5875; background: #182b40; }
 .profile-actions button:disabled { cursor: default; opacity: .36; }

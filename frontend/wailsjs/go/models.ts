@@ -26,6 +26,7 @@ export namespace app {
 	}
 	export class SaveProfileRequest {
 	    profile: model.ConnectionProfile;
+	    copy_from_profile_id?: string;
 	    vpn_pre_shared_key: string;
 	    vpn_password: string;
 	    ssh_password: string;
@@ -39,6 +40,7 @@ export namespace app {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.profile = this.convertValues(source["profile"], model.ConnectionProfile);
+	        this.copy_from_profile_id = source["copy_from_profile_id"];
 	        this.vpn_pre_shared_key = source["vpn_pre_shared_key"];
 	        this.vpn_password = source["vpn_password"];
 	        this.ssh_password = source["ssh_password"];

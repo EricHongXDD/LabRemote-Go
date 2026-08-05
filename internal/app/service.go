@@ -21,6 +21,7 @@ import (
 
 type SaveProfileRequest struct {
 	Profile                 model.ConnectionProfile `json:"profile"`
+	CopyFromProfileID       string                  `json:"copy_from_profile_id,omitempty"`
 	VPNPreSharedKey         string                  `json:"vpn_pre_shared_key"`
 	VPNPassword             string                  `json:"vpn_password"`
 	SSHPassword             string                  `json:"ssh_password"`
@@ -71,7 +72,21 @@ func (s *Service) SaveProfile(ctx context.Context, request SaveProfileRequest) (
 	value := request.Profile
 	now := time.Now()
 	isNew := strings.TrimSpace(value.ID) == ""
+	copyFromProfileID := strings.TrimSpace(request.CopyFromProfileID)
 	var previous model.ConnectionProfile
+	var copySource model.ConnectionProfile
+	hasCopySource := false
+	if !isNew && copyFromProfileID != "" {
+		return model.ConnectionProfile{}, model.NewAppError("PROFILE_INVALID", "只能在新建连接时复制现有配置", "profile", false)
+	}
+	if isNew && copyFromProfileID != "" {
+		source, err := s.profiles.Get(ctx, copyFromProfileID)
+		if err != nil {
+			return model.ConnectionProfile{}, err
+		}
+		copySource = source
+		hasCopySource = true
+	}
 	if isNew {
 		value.ID = uuid.NewString()
 		value.CreatedAt = now
@@ -95,12 +110,13 @@ func (s *Service) SaveProfile(ctx context.Context, request SaveProfileRequest) (
 			value.VPN.ServerPort = 992
 		}
 	}
-	if !isNew && value.UsesIsolatedTunnel() {
-		previousPort := previous.VPN.ServerPort
-		if previousPort == 0 {
-			previousPort = 992
-		}
-		if !previous.UsesIsolatedTunnel() || !strings.EqualFold(strings.TrimSpace(previous.VPN.ServerAddress), strings.TrimSpace(value.VPN.ServerAddress)) || previousPort != value.VPN.ServerPort {
+	if value.UsesIsolatedTunnel() {
+		switch {
+		case !isNew && !sameTunnelEndpoint(previous, value):
+			value.VPN.ServerCertificate = ""
+		case isNew && hasCopySource && sameTunnelEndpoint(copySource, value):
+			value.VPN.ServerCertificate = copySource.VPN.ServerCertificate
+		case isNew && hasCopySource:
 			value.VPN.ServerCertificate = ""
 		}
 	}
@@ -126,76 +142,108 @@ func (s *Service) SaveProfile(ctx context.Context, request SaveProfileRequest) (
 			return model.ConnectionProfile{}, model.NewAppError("PROFILE_INVALID", "连接名称已存在", "profile", false)
 		}
 	}
-	var privateKeyPath []byte
-	var privateKeyPassphrase []byte
+	type secretValue struct {
+		key   string
+		value []byte
+	}
+	secretValues := make([]secretValue, 0, 5)
+	var privateKeyPath, privateKeyPassphrase []byte
 	privateKeyEncrypted := false
 	if value.SSH.EffectiveAuthMethod() == model.SSHAuthPrivateKey {
-		privateKeyPath, privateKeyPassphrase, privateKeyEncrypted, err = s.resolvePrivateKeyCredential(ctx, value.ID, request.SSHPrivateKeyPath, request.SSHPrivateKeyPassphrase)
+		credentialProfileID := value.ID
+		if isNew && hasCopySource && copySource.SSH.EffectiveAuthMethod() == model.SSHAuthPrivateKey {
+			credentialProfileID = copySource.ID
+		}
+		privateKeyPath, privateKeyPassphrase, privateKeyEncrypted, err = s.resolvePrivateKeyCredential(ctx, credentialProfileID, request.SSHPrivateKeyPath, request.SSHPrivateKeyPassphrase)
 		if err != nil {
 			return model.ConnectionProfile{}, err
 		}
 		defer secrets.Zero(privateKeyPath)
 		defer secrets.Zero(privateKeyPassphrase)
-	} else if err := s.requireProfileCredential(ctx, model.SSHPasswordKey(value.ID), request.SSHPassword, "SSH 密码"); err != nil {
-		return model.ConnectionProfile{}, err
-	}
-	if value.UsesIsolatedTunnel() {
-		if err := s.requireProfileCredential(ctx, model.VPNPasswordKey(value.ID), request.VPNPassword, "隔离隧道密码"); err != nil {
-			return model.ConnectionProfile{}, err
+		if isNew || strings.TrimSpace(request.SSHPrivateKeyPath) != "" {
+			secretValues = append(secretValues, secretValue{model.SSHPrivateKeyPathKey(value.ID), privateKeyPath})
 		}
-	}
-	secretValues := make([]struct {
-		key   string
-		value string
-	}, 0, 5)
-	if value.SSH.EffectiveAuthMethod() == model.SSHAuthPrivateKey {
-		if strings.TrimSpace(request.SSHPrivateKeyPath) != "" {
-			secretValues = append(secretValues, struct {
-				key   string
-				value string
-			}{model.SSHPrivateKeyPathKey(value.ID), strings.TrimSpace(request.SSHPrivateKeyPath)})
-		}
-		if request.SSHPrivateKeyPassphrase != "" {
-			secretValues = append(secretValues, struct {
-				key   string
-				value string
-			}{model.SSHPrivateKeyPassphraseKey(value.ID), request.SSHPrivateKeyPassphrase})
+		if privateKeyEncrypted && len(privateKeyPassphrase) > 0 && (isNew || request.SSHPrivateKeyPassphrase != "") {
+			secretValues = append(secretValues, secretValue{model.SSHPrivateKeyPassphraseKey(value.ID), privateKeyPassphrase})
 		}
 	} else {
-		secretValues = append(secretValues, struct {
-			key   string
-			value string
-		}{model.SSHPasswordKey(value.ID), request.SSHPassword})
+		credentialKey := model.SSHPasswordKey(value.ID)
+		if isNew && hasCopySource && copySource.SSH.EffectiveAuthMethod() == model.SSHAuthPassword {
+			credentialKey = model.SSHPasswordKey(copySource.ID)
+		}
+		sshPassword, resolveErr := s.resolvePasswordCredential(ctx, credentialKey, request.SSHPassword, "SSH 密码")
+		if resolveErr != nil {
+			return model.ConnectionProfile{}, resolveErr
+		}
+		defer secrets.Zero(sshPassword)
+		if isNew || request.SSHPassword != "" {
+			secretValues = append(secretValues, secretValue{model.SSHPasswordKey(value.ID), sshPassword})
+		}
 	}
 	if value.UsesIsolatedTunnel() {
-		secretValues = append(secretValues,
-			struct {
-				key   string
-				value string
-			}{model.VPNPSKKey(value.ID), request.VPNPreSharedKey},
-			struct {
-				key   string
-				value string
-			}{model.VPNPasswordKey(value.ID), request.VPNPassword},
-		)
+		credentialKey := model.VPNPasswordKey(value.ID)
+		if isNew && hasCopySource && copySource.UsesIsolatedTunnel() {
+			credentialKey = model.VPNPasswordKey(copySource.ID)
+		}
+		vpnPassword, resolveErr := s.resolvePasswordCredential(ctx, credentialKey, request.VPNPassword, "隔离隧道密码")
+		if resolveErr != nil {
+			return model.ConnectionProfile{}, resolveErr
+		}
+		defer secrets.Zero(vpnPassword)
+		if isNew || request.VPNPassword != "" {
+			secretValues = append(secretValues, secretValue{model.VPNPasswordKey(value.ID), vpnPassword})
+		}
+	}
+	if value.UsesIsolatedTunnel() {
+		var vpnPreSharedKey []byte
+		if request.VPNPreSharedKey != "" {
+			vpnPreSharedKey = []byte(request.VPNPreSharedKey)
+		} else if isNew && hasCopySource && copySource.UsesIsolatedTunnel() {
+			vpnPreSharedKey, err = s.secrets.Get(ctx, model.VPNPSKKey(copySource.ID))
+			if errors.Is(err, secrets.ErrNotFound) {
+				err = nil
+				vpnPreSharedKey = nil
+			}
+			if err != nil {
+				return model.ConnectionProfile{}, model.NewAppError("SECRET_NOT_FOUND", "无法读取来源连接的兼容预共享密钥", "profile", false)
+			}
+		}
+		if len(vpnPreSharedKey) > 0 {
+			defer secrets.Zero(vpnPreSharedKey)
+			secretValues = append(secretValues, secretValue{model.VPNPSKKey(value.ID), vpnPreSharedKey})
+		}
 	}
 	for _, item := range secretValues {
-		if item.value == "" {
+		if len(item.value) == 0 {
 			continue
 		}
-		secret := []byte(item.value)
-		if err := s.secrets.Put(ctx, item.key, secret); err != nil {
-			secrets.Zero(secret)
+		if err := s.secrets.Put(ctx, item.key, item.value); err != nil {
 			return model.ConnectionProfile{}, model.NewAppError("SECRET_STORE_FAILED", "保存系统安全凭据失败", "profile", true)
 		}
-		secrets.Zero(secret)
 	}
 	if value.SSH.EffectiveAuthMethod() == model.SSHAuthPrivateKey && !privateKeyEncrypted {
 		if err := s.secrets.Delete(ctx, model.SSHPrivateKeyPassphraseKey(value.ID)); err != nil {
 			return model.ConnectionProfile{}, model.NewAppError("SECRET_STORE_FAILED", "清理不再需要的 SSH 私钥口令失败", "profile", true)
 		}
 	}
+	copiedKnownHost := false
+	if isNew && hasCopySource && sameSSHEndpoint(copySource, value) {
+		record, ok, lookupErr := s.knownHosts.Lookup(copySource.ID)
+		if lookupErr != nil {
+			return model.ConnectionProfile{}, lookupErr
+		}
+		if ok {
+			record.ProfileID = value.ID
+			if storeErr := s.knownHosts.Store(record); storeErr != nil {
+				return model.ConnectionProfile{}, storeErr
+			}
+			copiedKnownHost = true
+		}
+	}
 	if err := s.profiles.Upsert(ctx, value); err != nil {
+		if copiedKnownHost {
+			_ = s.knownHosts.Remove(value.ID)
+		}
 		return model.ConnectionProfile{}, err
 	}
 	credentialChanged := request.SSHPassword != "" || strings.TrimSpace(request.SSHPrivateKeyPath) != "" || request.SSHPrivateKeyPassphrase != ""
@@ -208,16 +256,15 @@ func (s *Service) SaveProfile(ctx context.Context, request SaveProfileRequest) (
 	return value, nil
 }
 
-func (s *Service) requireProfileCredential(ctx context.Context, key, provided, label string) error {
+func (s *Service) resolvePasswordCredential(ctx context.Context, key, provided, label string) ([]byte, error) {
 	if provided != "" {
-		return nil
+		return []byte(provided), nil
 	}
 	stored, err := s.secrets.Get(ctx, key)
 	if err != nil {
-		return model.NewAppError("SECRET_NOT_FOUND", "未找到已保存的"+label+"，请重新输入", "profile", false)
+		return nil, model.NewAppError("SECRET_NOT_FOUND", "未找到已保存的"+label+"，请重新输入", "profile", false)
 	}
-	secrets.Zero(stored)
-	return nil
+	return stored, nil
 }
 
 func (s *Service) resolvePrivateKeyCredential(ctx context.Context, profileID, providedPath, providedPassphrase string) ([]byte, []byte, bool, error) {
@@ -351,6 +398,16 @@ func (s *Service) runConnectionTest(ctx context.Context, request TestConnectionR
 	}
 	value.CreatedAt = time.Now()
 	value.UpdatedAt = value.CreatedAt
+	vpnCredentialProfileID := originalProfileID
+	sshCredentialProfileID := originalProfileID
+	if hasSavedProfile {
+		if !savedProfile.UsesIsolatedTunnel() || !value.UsesIsolatedTunnel() {
+			vpnCredentialProfileID = ""
+		}
+		if savedProfile.SSH.EffectiveAuthMethod() != value.SSH.EffectiveAuthMethod() {
+			sshCredentialProfileID = ""
+		}
+	}
 	if !includeSSH {
 		// 隧道测试不依赖 SSH 表单，使用只存在于临时配置中的占位字段完成结构校验。
 		value.SSH.ServerAddress = "127.0.0.1"
@@ -377,7 +434,7 @@ func (s *Service) runConnectionTest(ctx context.Context, request TestConnectionR
 	status := model.VPNStatus{}
 	tunnelFingerprint := ""
 	if value.UsesIsolatedTunnel() {
-		vpnPassword, secretErr := s.connectionTestSecret(probeContext, originalProfileID, request.VPNPassword, model.VPNPasswordKey, "隔离隧道密码")
+		vpnPassword, secretErr := s.connectionTestSecret(probeContext, vpnCredentialProfileID, request.VPNPassword, model.VPNPasswordKey, "隔离隧道密码")
 		if secretErr != nil {
 			return ConnectionTestResult{}, secretErr
 		}
@@ -403,7 +460,7 @@ func (s *Service) runConnectionTest(ctx context.Context, request TestConnectionR
 	}
 
 	if value.SSH.EffectiveAuthMethod() == model.SSHAuthPrivateKey {
-		privateKeyPath, privateKeyPassphrase, _, resolveErr := s.resolvePrivateKeyCredential(probeContext, originalProfileID, request.SSHPrivateKeyPath, request.SSHPrivateKeyPassphrase)
+		privateKeyPath, privateKeyPassphrase, _, resolveErr := s.resolvePrivateKeyCredential(probeContext, sshCredentialProfileID, request.SSHPrivateKeyPath, request.SSHPrivateKeyPassphrase)
 		if resolveErr != nil {
 			return ConnectionTestResult{}, resolveErr
 		}
@@ -421,7 +478,7 @@ func (s *Service) runConnectionTest(ctx context.Context, request TestConnectionR
 		}
 		secrets.Zero(privateKeyPassphrase)
 	} else {
-		sshPassword, secretErr := s.connectionTestSecret(probeContext, originalProfileID, request.SSHPassword, model.SSHPasswordKey, "SSH 密码")
+		sshPassword, secretErr := s.connectionTestSecret(probeContext, sshCredentialProfileID, request.SSHPassword, model.SSHPasswordKey, "SSH 密码")
 		if secretErr != nil {
 			return ConnectionTestResult{}, secretErr
 		}

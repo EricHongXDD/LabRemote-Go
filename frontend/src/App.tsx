@@ -37,7 +37,7 @@ import TerminalView from './components/TerminalView'
 import TransferDialog from './components/TransferDialog'
 import type {TransferMode} from './components/TransferDialog'
 import {parseAppError} from './lib/errors'
-import {usesIsolatedTunnel} from './lib/profile'
+import {createProfileCopyDraft, usesIsolatedTunnel} from './lib/profile'
 import type {ConnectionProfile, ConnectionTestResult, DownloadProgress, DownloadRequest, RemoteDirectory, SaveProfileRequest, TerminalTab, TestConnectionRequest, UploadProgress, UploadRequest} from './types'
 
 type MCPState = {enabled: boolean; address: string; port: number}
@@ -63,6 +63,7 @@ export default function App() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [transferMode, setTransferMode] = useState<TransferMode | null>(null)
   const [editing, setEditing] = useState<ConnectionProfile | null>(null)
+  const [copySourceProfileID, setCopySourceProfileID] = useState('')
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('准备就绪')
   const [status, setStatus] = useState<StatusValue>({})
@@ -146,14 +147,40 @@ export default function App() {
 
   const save = async (request: SaveProfileRequest) => {
     try {
-      await SaveProfile(generatedApp.SaveProfileRequest.createFrom(request))
+      const saved = await SaveProfile(generatedApp.SaveProfileRequest.createFrom(request)) as ConnectionProfile
       setDialogOpen(false)
       setEditing(null)
+      setCopySourceProfileID('')
       setNotice('连接配置已保存，敏感凭据由系统安全存储保护')
       await refreshProfiles()
+      setSelectedID(saved.id)
     } catch (error) {
       throw new Error(parseAppError(error).message)
     }
+  }
+
+  const openNewProfile = () => {
+    setEditing(null)
+    setCopySourceProfileID('')
+    setDialogOpen(true)
+  }
+
+  const openEditProfile = (profile: ConnectionProfile) => {
+    setEditing(profile)
+    setCopySourceProfileID('')
+    setDialogOpen(true)
+  }
+
+  const openProfileCopy = (profile: ConnectionProfile) => {
+    setEditing(createProfileCopyDraft(profile))
+    setCopySourceProfileID(profile.id)
+    setDialogOpen(true)
+  }
+
+  const closeProfileDialog = () => {
+    setDialogOpen(false)
+    setEditing(null)
+    setCopySourceProfileID('')
   }
 
   const testTunnel = async (request: TestConnectionRequest): Promise<ConnectionTestResult> => {
@@ -323,7 +350,7 @@ export default function App() {
     setConnectionMenu({
       profile,
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - 224)),
-	  y: Math.max(8, Math.min(event.clientY, window.innerHeight - 320)),
+	  y: Math.max(8, Math.min(event.clientY, window.innerHeight - 352)),
     })
   }
 
@@ -420,8 +447,9 @@ export default function App() {
           <div className="connection-panel-header">
             <div className="connection-panel-title"><span>连接配置</span><em>{profiles.length}</em></div>
             <div className="profile-actions" role="toolbar" aria-label="连接配置管理">
-              <button className="profile-add" onClick={() => { setEditing(null); setDialogOpen(true) }}><span>＋</span>新建</button>
-              <button disabled={!selected} onClick={() => { setEditing(selected); setDialogOpen(true) }}>编辑</button>
+              <button className="profile-add" onClick={openNewProfile}><span>＋</span>新建</button>
+              <button disabled={!selected} onClick={() => selected && openProfileCopy(selected)}>复制</button>
+              <button disabled={!selected} onClick={() => selected && openEditProfile(selected)}>编辑</button>
               <button className="profile-delete" disabled={!selected} onClick={() => selected && void deleteProfile(selected)}>删除</button>
             </div>
           </div>
@@ -438,7 +466,7 @@ export default function App() {
                 ))}
               </div>
             ))}
-            {profiles.length === 0 && <div className="empty-list"><span>＋</span><strong>尚未添加连接</strong><small>创建连接后即可使用终端、文件传输和网页访问。</small><button onClick={() => { setEditing(null); setDialogOpen(true) }}>新建连接</button></div>}
+            {profiles.length === 0 && <div className="empty-list"><span>＋</span><strong>尚未添加连接</strong><small>创建连接后即可使用终端、文件传输和网页访问。</small><button onClick={openNewProfile}>新建连接</button></div>}
           </div>
 
           <div className="connection-actions">
@@ -483,7 +511,7 @@ export default function App() {
                   {selected ? <>
                     <button className="button primary" onClick={() => connect(selected)}>连接并打开终端</button>
                     <button className="button secondary" onClick={() => setBrowserProfile(selected)}>网页访问</button>
-                  </> : <button className="button primary" onClick={() => { setEditing(null); setDialogOpen(true) }}>新建第一个连接</button>}
+                  </> : <button className="button primary" onClick={openNewProfile}>新建第一个连接</button>}
                 </div>
               </div>
               <div className="security-strip">
@@ -505,7 +533,7 @@ export default function App() {
         <span className={`mcp-status ${mcp.enabled ? 'enabled' : ''}`}>MCP {mcp.enabled ? `127.0.0.1:${mcp.port}` : '已关闭'}</span>
       </footer>
 
-      {dialogOpen && <ProfileDialog value={editing} onCancel={() => { setDialogOpen(false); setEditing(null) }} onSave={save} onTestTunnel={testTunnel} onTestSSH={testSSH} onSelectSSHPrivateKey={SelectSSHPrivateKey} onClearSecret={clearSecret} />}
+      {dialogOpen && <ProfileDialog value={editing} copySourceProfileID={copySourceProfileID} onCancel={closeProfileDialog} onSave={save} onTestTunnel={testTunnel} onTestSSH={testSSH} onSelectSSHPrivateKey={SelectSSHPrivateKey} onClearSecret={clearSecret} />}
       {browserProfile && <BrowserDialog profile={browserProfile} onClose={() => setBrowserProfile(null)} onOpen={targetURL => openBrowser(browserProfile, targetURL)} />}
       {transferMode && selected && <TransferDialog
         profile={selected}
@@ -528,7 +556,8 @@ export default function App() {
           <button onClick={() => { const profile = connectionMenu.profile; setConnectionMenu(null); void closeBrowser(profile) }}>× 关闭网页访问</button>
           <button onClick={() => { setTransferMode('upload'); setConnectionMenu(null) }}>⇅ 文件传输</button>
           <i />
-          <button onClick={() => { setEditing(connectionMenu.profile); setDialogOpen(true); setConnectionMenu(null) }}>编辑连接</button>
+          <button onClick={() => { openProfileCopy(connectionMenu.profile); setConnectionMenu(null) }}>复制连接</button>
+          <button onClick={() => { openEditProfile(connectionMenu.profile); setConnectionMenu(null) }}>编辑连接</button>
           <button className="danger" onClick={() => { const profile = connectionMenu.profile; setConnectionMenu(null); void deleteProfile(profile) }}>删除连接</button>
         </nav>
       </div>}
