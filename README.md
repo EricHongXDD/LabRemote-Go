@@ -67,7 +67,7 @@ npm.cmd run build
 - `LabRemote-macos-universal.zip`：同时支持 Apple Silicon 与 Intel 的 macOS `.app`；凭据保存到 Keychain；
 - `SHA256SUMS.txt`：全部发行文件的 SHA-256 校验值。
 
-推送符合 `v*` 格式的标签会自动构建三个平台并把产物上传到对应 GitHub Release。手动运行发行工作流时填写版本标签也会自动创建或更新 Release；只有显式关闭“发布到 Releases”时才仅保留 Actions Artifact。标签版本必须与 `wails.json` 中的 `info.productVersion` 一致，例如 `v1.5.0`。
+推送符合 `v*` 格式的标签会自动构建三个平台并把产物上传到对应 GitHub Release。手动运行发行工作流时填写版本标签也会自动创建或更新 Release；只有显式关闭“发布到 Releases”时才仅保留 Actions Artifact。标签版本必须与 `wails.json` 中的 `info.productVersion` 一致，例如 `v1.5.1`。
 
 当前 Windows 与 macOS 产物尚未配置代码签名或 Apple 公证；首次运行时操作系统可能显示未知开发者提示。请先用 `SHA256SUMS.txt` 核验下载文件。
 
