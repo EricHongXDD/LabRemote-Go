@@ -57,8 +57,21 @@ func (meter *uploadSpeedMeter) add(now time.Time, delta int64) int64 {
 	if delta <= 0 {
 		return meter.current(now)
 	}
-	if meter.sampleStartedAt.IsZero() || (!meter.lastByteAt.IsZero() && now.Sub(meter.lastByteAt) >= uploadSpeedIdleTimeout) {
+	if meter.sampleStartedAt.IsZero() {
 		meter.reset(now)
+	}
+	if !meter.lastByteAt.IsZero() {
+		idleElapsed := now.Sub(meter.lastByteAt)
+		if idleElapsed >= uploadSpeedIdleTimeout {
+			// 限速或高延迟链路可能在完整 SFTP 请求窗口确认后才产生下一批进度。
+			// 使用本批字节与空闲间隔立即重建速度，避免每个稀疏批次都被重置为 0。
+			sample := int64(float64(delta) / idleElapsed.Seconds())
+			meter.sampleStartedAt = now
+			meter.lastByteAt = now
+			meter.pendingBytes = 0
+			meter.bytesPerSecond = max(int64(1), sample)
+			return meter.bytesPerSecond
+		}
 	}
 	meter.pendingBytes += delta
 	meter.lastByteAt = now

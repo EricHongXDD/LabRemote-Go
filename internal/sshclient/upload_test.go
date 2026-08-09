@@ -294,6 +294,32 @@ func TestUploadSpeedMeterSmoothsNetworkBytesAndReturnsZeroWhenIdle(t *testing.T)
 	}
 }
 
+func TestUploadSpeedMeterRecoversImmediatelyFromSparseProgressBursts(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 10, 9, 0, 0, 0, time.UTC)
+	meter := uploadSpeedMeter{}
+	meter.reset(startedAt)
+	if got := meter.add(startedAt.Add(300*time.Millisecond), uploadProgressBatchBytes); got <= 0 {
+		t.Fatalf("首个速度样本 = %d，期望大于 0", got)
+	}
+	if got := meter.current(startedAt.Add(2500 * time.Millisecond)); got != 0 {
+		t.Fatalf("空闲超时后的速度 = %d，期望 0", got)
+	}
+
+	// 高延迟或限速链路可能按完整 SFTP 窗口成批确认，批次间隔会超过空闲阈值。
+	// 新批次本身必须立即恢复速度，否则每个稀疏批次都会重置采样器并永久显示 0 B/s。
+	burstAt := startedAt.Add(3300 * time.Millisecond)
+	wantRecovered := int64(float64(uploadProgressBatchBytes) / (3 * time.Second).Seconds())
+	if got := meter.add(burstAt, uploadProgressBatchBytes); got != wantRecovered {
+		t.Fatalf("稀疏批次后的恢复速度 = %d，期望 %d", got, wantRecovered)
+	}
+	if got := meter.current(burstAt.Add(time.Second)); got != wantRecovered {
+		t.Fatalf("恢复后的当前速度 = %d，期望 %d", got, wantRecovered)
+	}
+	if got := meter.add(burstAt.Add(3*time.Second), uploadProgressBatchBytes); got != wantRecovered {
+		t.Fatalf("连续稀疏批次的速度 = %d，期望 %d", got, wantRecovered)
+	}
+}
+
 func TestUploadNetworkBytesExcludesResumedBytes(t *testing.T) {
 	progress := model.UploadProgress{BytesTransferred: 10 * 1024, BytesResumed: 4 * 1024}
 	if got := uploadNetworkBytes(progress); got != 6*1024 {
