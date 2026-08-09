@@ -6,7 +6,7 @@ toolchain go1.25.12
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/pkg/sftp v1.13.11
 	github.com/wailsapp/wails/v2 v2.13.0
 	github.com/zalando/go-keyring v0.2.8
@@ -18,7 +18,8 @@ require (
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/google/btree v1.1.2 // indirect
 	github.com/kr/fs v0.1.0 // indirect
-	golang.org/x/time v0.8.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	gvisor.dev/gvisor v0.0.0-20250503011706-39ed1f5ac29c // indirect
 )
