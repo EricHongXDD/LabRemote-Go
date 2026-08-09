@@ -15,7 +15,7 @@ LabRemote 是面向 Windows、Linux 和 macOS 的 SSH + 可选隔离隧道 + 网
 - WireGuard netstack/gVisor 用户态 TCP/IP；SSH 拨号仅允许配置的主机与端口；
 - SoftEther 服务器证书首次确认、SHA-256 固定和变化阻断；
 - SSH 密码或私钥认证、首次主机指纹确认和指纹变化阻断；
-- 通过同一 SSH 连接上传与下载多个文件或递归传输文件夹；隔离模式继续经过用户态隧道，直接模式不建立 VPN；支持拖拽上传、活动终端目录默认值、空目录、覆盖保护、并行传输、断点续传、实时进度和取消；大文件上传会按剩余大小和并行文件数自适应使用 1-64 个标准 SFTP 请求，单任务总在途请求不超过 64 个；
+- 通过同一 SSH 连接上传与下载多个文件或递归传输文件夹；隔离模式继续经过用户态隧道，直接模式不建立 VPN；支持拖拽上传、活动终端目录默认值、空目录、覆盖保护、并行传输、断点续传、实时进度、实时上传速度和取消；大文件上传会按剩余大小和并行文件数自适应使用 1-64 个标准 SFTP 请求，单任务总在途请求不超过 64 个；
 - xterm-256color 多标签 PTY、中文、ANSI、搜索、复制、粘贴和窗口缩放；
 - 左侧连接/断开快捷操作、双击连接和连接项右键菜单；
 - 通过随机 `127.0.0.1` 临时代理和 SSH `direct-tcpip` 跳板完成网页访问，并在系统默认浏览器中打开；网络意外断开时自动恢复可选隧道和 SSH 后重试，代理随 Profile 主动断开统一回收；
@@ -67,7 +67,7 @@ npm.cmd run build
 - `LabRemote-macos-universal.zip`：同时支持 Apple Silicon 与 Intel 的 macOS `.app`；凭据保存到 Keychain；
 - `SHA256SUMS.txt`：全部发行文件的 SHA-256 校验值。
 
-推送符合 `v*` 格式的标签会自动构建三个平台并把产物上传到对应 GitHub Release。手动运行发行工作流时填写版本标签也会自动创建或更新 Release；只有显式关闭“发布到 Releases”时才仅保留 Actions Artifact。标签版本必须与 `wails.json` 中的 `info.productVersion` 一致，例如 `v1.3.0`。
+推送符合 `v*` 格式的标签会自动构建三个平台并把产物上传到对应 GitHub Release。手动运行发行工作流时填写版本标签也会自动创建或更新 Release；只有显式关闭“发布到 Releases”时才仅保留 Actions Artifact。标签版本必须与 `wails.json` 中的 `info.productVersion` 一致，例如 `v1.4.0`。
 
 当前 Windows 与 macOS 产物尚未配置代码签名或 Apple 公证；首次运行时操作系统可能显示未知开发者提示。请先用 `SHA256SUMS.txt` 核验下载文件。
 

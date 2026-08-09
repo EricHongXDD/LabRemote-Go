@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/EricHongXDD/LabRemote-Go/internal/model"
 	"github.com/pkg/sftp"
@@ -251,5 +252,51 @@ func TestUploadProgressReaderBatchesCallbacksAndKeepsCancellationResponsive(t *t
 	}
 	if written != uploadProgressBatchBytes || reported != uploadProgressBatchBytes || callbackCount != 1 {
 		t.Fatalf("批量进度异常：written=%d reported=%d callbacks=%d", written, reported, callbackCount)
+	}
+}
+
+func TestUploadProgressReaderFlushesSmallDeltaAfterSampleInterval(t *testing.T) {
+	var reported int64
+	reader := &uploadProgressReader{
+		ctx:       context.Background(),
+		reader:    bytes.NewReader(bytes.Repeat([]byte("x"), 1024)),
+		onBytes:   func(delta int64) { reported += delta },
+		lastFlush: time.Now().Add(-uploadSpeedSampleInterval),
+	}
+	buffer := make([]byte, 1024)
+	if count, err := reader.Read(buffer); err != nil || count != len(buffer) {
+		t.Fatalf("读取低速样本失败：count=%d err=%v", count, err)
+	}
+	if reported != int64(len(buffer)) || reader.pending != 0 {
+		t.Fatalf("定时进度刷新异常：reported=%d pending=%d", reported, reader.pending)
+	}
+}
+
+func TestUploadSpeedMeterSmoothsNetworkBytesAndReturnsZeroWhenIdle(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
+	meter := uploadSpeedMeter{}
+	meter.reset(startedAt)
+	if got := meter.add(startedAt.Add(100*time.Millisecond), 256*1024); got != 0 {
+		t.Fatalf("采样窗口未完成时速度 = %d，期望 0", got)
+	}
+	first := meter.add(startedAt.Add(300*time.Millisecond), 256*1024)
+	wantFirst := int64(float64(512*1024) / (300 * time.Millisecond).Seconds())
+	if first != wantFirst {
+		t.Fatalf("首个速度样本 = %d，期望 %d", first, wantFirst)
+	}
+	secondSample := int64(float64(256*1024) / (300 * time.Millisecond).Seconds())
+	wantSmoothed := (wantFirst*2 + secondSample) / 3
+	if got := meter.add(startedAt.Add(600*time.Millisecond), 256*1024); got != wantSmoothed {
+		t.Fatalf("平滑速度 = %d，期望 %d", got, wantSmoothed)
+	}
+	if got := meter.current(startedAt.Add(2700 * time.Millisecond)); got != 0 {
+		t.Fatalf("空闲超时后的速度 = %d，期望 0", got)
+	}
+}
+
+func TestUploadNetworkBytesExcludesResumedBytes(t *testing.T) {
+	progress := model.UploadProgress{BytesTransferred: 10 * 1024, BytesResumed: 4 * 1024}
+	if got := uploadNetworkBytes(progress); got != 6*1024 {
+		t.Fatalf("实际网络传输字节 = %d，期望 %d", got, 6*1024)
 	}
 }

@@ -112,7 +112,7 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("```json\n")
 	fmt.Fprintf(&guide, "{\n  \"profile_id\": %q,\n  \"local_paths\": [\"C:\\\\Users\\\\example\\\\payload.bin\"],\n  \"remote_directory\": \"/srv/uploads\",\n  \"overwrite\": false,\n  \"resume\": true\n}\n", exampleProfileID(profiles))
 	guide.WriteString("```\n\n")
-	guide.WriteString("4. 保存返回的 `job_id`，使用 `file_upload_status` 低频轮询，直到 `state` 为 `completed`、`failed` 或 `cancelled`。关注 `bytes_transferred`、`bytes_resumed`、文件/目录完成数和错误字段。\n")
+	guide.WriteString("4. 保存返回的 `job_id`，使用 `file_upload_status` 低频轮询，直到 `state` 为 `completed`、`failed` 或 `cancelled`。关注 `bytes_transferred`、实时聚合速度 `bytes_per_second`、`bytes_resumed`、文件/目录完成数和错误字段。\n")
 	guide.WriteString("5. 用户取消任务时调用 `file_upload_cancel`。MCP 只能查询或取消当前服务实例自己创建的上传任务，不能操作图形界面任务。\n\n")
 
 	guide.WriteString("## 8. 推荐工作流：下载文件或目录\n\n")

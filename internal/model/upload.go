@@ -37,6 +37,7 @@ type UploadProgress struct {
 	FilesCompleted       int         `json:"files_completed"`
 	DirectoriesCompleted int         `json:"directories_completed"`
 	BytesTransferred     int64       `json:"bytes_transferred"`
+	BytesPerSecond       int64       `json:"bytes_per_second"`
 	BytesResumed         int64       `json:"bytes_resumed"`
 	ConcurrentFiles      int         `json:"concurrent_files"`
 	ErrorCode            string      `json:"error_code,omitempty"`
