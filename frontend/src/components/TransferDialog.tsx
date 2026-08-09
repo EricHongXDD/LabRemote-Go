@@ -81,6 +81,7 @@ export default function TransferDialog({
   onConfirm,
 }: Props) {
   const [mode, setMode] = useState<TransferMode>(initialMode)
+  const [minimized, setMinimized] = useState(false)
   const [selections, setSelections] = useState<UploadSelection[]>([])
   const [remoteDirectory, setRemoteDirectory] = useState('~')
   const [browserPath, setBrowserPath] = useState('~')
@@ -187,7 +188,7 @@ export default function TransferDialog({
   }
 
   useEffect(() => {
-    if (mode !== 'upload' || active) return
+    if (mode !== 'upload' || active || minimized) return
     OnFileDrop((_x, _y, paths) => {
       if (!paths?.length) return
       setSelecting(true)
@@ -197,7 +198,7 @@ export default function TransferDialog({
       }).finally(() => setSelecting(false))
     }, true)
     return () => OnFileDropOff()
-  }, [mode, active])
+  }, [mode, active, minimized])
 
   const selectedBytes = useMemo(
     () => selections.reduce((sum, item) => sum + (item.is_directory ? 0 : item.size), 0),
@@ -324,8 +325,32 @@ export default function TransferDialog({
     onClose()
   }
 
+  const minimize = () => {
+    setMinimized(true)
+    onNotice(active ? `${profile.display_name} 的文件传输已转入后台` : '文件传输窗口已最小化')
+  }
+
+  if (minimized) {
+    return (
+      <div className="transfer-minimized-layer">
+        <section className={`transfer-minimized-card ${progress?.state || ''}`} role="region" aria-label={`${profile.display_name} 文件传输任务`}>
+          <button className="transfer-minimized-main" onClick={() => setMinimized(false)} aria-label="恢复文件传输窗口">
+            <span className="transfer-minimized-icon">{mode === 'upload' ? '⇧' : '⇩'}</span>
+            <span className="transfer-minimized-copy">
+              <strong>{profile.display_name} · {mode === 'upload' ? '上传' : '下载'}</strong>
+              <small>{progressStateLabel(mode, progress?.state)} · {percent}%{mode === 'upload' && progress ? ` · ${formatSpeed((progress as UploadProgress).bytes_per_second || 0)}` : ''}</small>
+            </span>
+          </button>
+          <button className="transfer-minimized-restore" onClick={() => setMinimized(false)}>展开</button>
+          <button className="transfer-minimized-close" onClick={() => void close()} aria-label={active ? '取消传输并关闭' : '关闭传输任务'}>×</button>
+          <div className={`transfer-minimized-track ${progress?.state === 'scanning' ? 'indeterminate' : ''}`} aria-hidden="true"><i style={{width: `${percent}%`}} /></div>
+        </section>
+      </div>
+    )
+  }
+
   return (
-    <div className="modal-backdrop">
+    <div className="modal-backdrop transfer-backdrop">
       <section className="upload-dialog transfer-dialog" role="dialog" aria-modal="true" aria-label="文件传输">
         <header className="dialog-titlebar transfer-titlebar">
           <div><span className="eyebrow">{usesIsolatedTunnel(profile) ? 'SFTP OVER ISOLATED SSH' : 'SFTP OVER SSH'}</span><h2>{profile.display_name} · 文件传输</h2></div>
@@ -333,7 +358,10 @@ export default function TransferDialog({
             <button className={mode === 'upload' ? 'active' : ''} disabled={active} onClick={() => setMode('upload')}>⇧ 上传</button>
             <button className={mode === 'download' ? 'active' : ''} disabled={active} onClick={() => setMode('download')}>⇩ 下载</button>
           </div>
-          <button className="icon-button" onClick={() => void close()} aria-label="关闭">×</button>
+          <div className="transfer-window-actions">
+            <button className="icon-button transfer-minimize-button" onClick={minimize} aria-label="最小化文件传输窗口" title="最小化到后台">−</button>
+            <button className="icon-button" onClick={() => void close()} aria-label="关闭">×</button>
+          </div>
         </header>
 
         {mode === 'upload' ? (
@@ -403,7 +431,9 @@ export default function TransferDialog({
 
         {error && <div className="inline-error">{error}</div>}
         <footer className="dialog-actions">
-          <button className="button secondary" onClick={() => void close()}>{active ? '关闭并取消' : '关闭'}</button>
+          {active
+            ? <button className="button secondary" onClick={minimize}>最小化到后台</button>
+            : <button className="button secondary" onClick={() => void close()}>关闭</button>}
           {active
             ? <button className="button danger" onClick={() => void cancel()}>取消{mode === 'upload' ? '上传' : '下载'}</button>
             : <button className="button primary" disabled={starting || (mode === 'upload' ? selections.length === 0 : selectedRemote.size === 0)} onClick={() => void (mode === 'upload' ? startUpload() : startDownload())}>{starting ? '正在连接…' : `开始${mode === 'upload' ? '上传' : '下载'}`}</button>}

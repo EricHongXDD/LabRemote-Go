@@ -48,6 +48,7 @@ import type {ConnectionProfile, ConnectionTestResult, DownloadProgress, Download
 type MCPState = {enabled: boolean; address: string; port: number}
 type StatusValue = {connection_mode?: string; vpn?: {state: string; route_ready: boolean; reference_num: number}; ssh_connected?: boolean; ui_sessions?: number; mcp_sessions?: number; active_transfers?: number; browser_sessions?: number}
 type ConnectionMenu = {profile: ConnectionProfile; x: number; y: number}
+type TransferDialogState = {profile: ConnectionProfile; mode: TransferMode}
 
 const vpnStateLabels: Record<string, string> = {
   disconnected: '未连接',
@@ -66,7 +67,7 @@ export default function App() {
   const [tabs, setTabs] = useState<TerminalTab[]>([])
   const [activeTab, setActiveTab] = useState('')
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [transferMode, setTransferMode] = useState<TransferMode | null>(null)
+  const [transferDialog, setTransferDialog] = useState<TransferDialogState | null>(null)
   const [editing, setEditing] = useState<ConnectionProfile | null>(null)
   const [copySourceProfileID, setCopySourceProfileID] = useState('')
   const [busy, setBusy] = useState(false)
@@ -262,10 +263,9 @@ export default function App() {
     }
   }
 
-  const listRemote = async (directory: string): Promise<RemoteDirectory> => {
-    if (!selected) throw new Error('连接配置不存在')
+  const listRemote = async (profile: ConnectionProfile, directory: string): Promise<RemoteDirectory> => {
     try {
-      return await runWithTrustConfirmation(selected, () => ListRemoteDirectory(selected.id, directory)) as RemoteDirectory
+      return await runWithTrustConfirmation(profile, () => ListRemoteDirectory(profile.id, directory)) as RemoteDirectory
     } catch (error) {
       setNotice(parseAppError(error).message)
       throw error
@@ -473,7 +473,7 @@ export default function App() {
         </div>
         <nav className="toolbar" aria-label="工作区操作">
           <button disabled={!selected} onClick={() => selected && setBrowserProfile(selected)}><span>◎</span>网页访问</button>
-          <button className="toolbar-primary" disabled={!selected} onClick={() => setTransferMode('upload')}><span>⇅</span>文件传输</button>
+          <button className="toolbar-primary" disabled={!selected} onClick={() => selected && setTransferDialog({profile: selected, mode: 'upload'})}><span>⇅</span>文件传输</button>
         </nav>
         <div className="mcp-toggle">
           <span className={`status-dot ${mcp.enabled ? 'online' : ''}`} />
@@ -589,14 +589,14 @@ export default function App() {
 			onImport={importConnections}
 		/>}
       {browserProfile && <BrowserDialog profile={browserProfile} onClose={() => setBrowserProfile(null)} onOpen={targetURL => openBrowser(browserProfile, targetURL)} />}
-      {transferMode && selected && <TransferDialog
-        profile={selected}
-        initialMode={transferMode}
-        terminalSessionID={tabs.find(tab => tab.id === activeTab && tab.profileId === selected.id && !tab.closed)?.id}
-        onClose={() => setTransferMode(null)}
+      {transferDialog && <TransferDialog
+        profile={transferDialog.profile}
+        initialMode={transferDialog.mode}
+        terminalSessionID={tabs.find(tab => tab.id === activeTab && tab.profileId === transferDialog.profile.id && !tab.closed)?.id}
+        onClose={() => setTransferDialog(null)}
         onStartUpload={startUpload}
         onStartDownload={startDownload}
-        onListRemote={listRemote}
+        onListRemote={directory => listRemote(transferDialog.profile, directory)}
         onNotice={setNotice}
         onConfirm={confirmAction}
       />}
@@ -608,7 +608,7 @@ export default function App() {
           <i />
           <button onClick={() => { setBrowserProfile(connectionMenu.profile); setConnectionMenu(null) }}>◎ 网页访问…</button>
           <button onClick={() => { const profile = connectionMenu.profile; setConnectionMenu(null); void closeBrowser(profile) }}>× 关闭网页访问</button>
-          <button onClick={() => { setTransferMode('upload'); setConnectionMenu(null) }}>⇅ 文件传输</button>
+          <button onClick={() => { setTransferDialog({profile: connectionMenu.profile, mode: 'upload'}); setConnectionMenu(null) }}>⇅ 文件传输</button>
           <i />
           <button onClick={() => { openProfileCopy(connectionMenu.profile); setConnectionMenu(null) }}>复制连接</button>
 			<button onClick={() => { setBundleDialog({mode: 'export', selectedIDs: [connectionMenu.profile.id]}); setConnectionMenu(null) }}>导出此连接…</button>
