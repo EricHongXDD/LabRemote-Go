@@ -24,6 +24,22 @@ export namespace app {
 	        this.duration_ms = source["duration_ms"];
 	    }
 	}
+	export class ImportConnectionsResult {
+	    imported: number;
+	    renamed: number;
+	    names: string[];
+
+	    static createFrom(source: any = {}) {
+	        return new ImportConnectionsResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.imported = source["imported"];
+	        this.renamed = source["renamed"];
+	        this.names = source["names"];
+	    }
+	}
 	export class SaveProfileRequest {
 	    profile: model.ConnectionProfile;
 	    copy_from_profile_id?: string;

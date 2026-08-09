@@ -9,6 +9,7 @@ LabRemote 是面向 Windows、Linux 和 macOS 的 SSH + 可选隔离隧道 + 网
 ## 已实现能力
 
 - “隔离隧道 + SSH”和“仅 SSH”两种连接配置的新增、复制、编辑、删除与分组展示；复制会清空名称并安全复用其余配置和系统凭据，旧配置自动按隔离隧道模式读取；
+- 选择一个或多个连接导出为密码保护的 `.lrcx` 连接包，并在其他电脑导入；连接配置、隧道/SSH 密码、兼容预共享密钥、SSH 私钥内容与口令、服务器证书和 SSH 主机信任记录使用 Argon2id 派生的 AES-256-GCM 密钥加密，全局 MCP Token 不会进入连接包；
 - 隧道密码、SSH 密码、私钥文件路径和私钥口令保存到操作系统安全凭据库：Windows Credential Manager、macOS Keychain 或 Linux Secret Service；私钥文件仍保留在用户选择的原位置；旧配置中的预共享密钥仅为兼容保留，不再参与连接；
 - SoftEther 原生 TLS 会话、Virtual Hub 自动发现和 DHCP 地址获取；
 - WireGuard netstack/gVisor 用户态 TCP/IP；SSH 拨号仅允许配置的主机与端口；
@@ -66,7 +67,7 @@ npm.cmd run build
 - `LabRemote-macos-universal.zip`：同时支持 Apple Silicon 与 Intel 的 macOS `.app`；凭据保存到 Keychain；
 - `SHA256SUMS.txt`：全部发行文件的 SHA-256 校验值。
 
-推送符合 `v*` 格式的标签会自动构建三个平台并把产物上传到对应 GitHub Release。手动运行发行工作流时填写版本标签也会自动创建或更新 Release；只有显式关闭“发布到 Releases”时才仅保留 Actions Artifact。标签版本必须与 `wails.json` 中的 `info.productVersion` 一致，例如 `v1.2.2`。
+推送符合 `v*` 格式的标签会自动构建三个平台并把产物上传到对应 GitHub Release。手动运行发行工作流时填写版本标签也会自动创建或更新 Release；只有显式关闭“发布到 Releases”时才仅保留 Actions Artifact。标签版本必须与 `wails.json` 中的 `info.productVersion` 一致，例如 `v1.3.0`。
 
 当前 Windows 与 macOS 产物尚未配置代码签名或 Apple 公证；首次运行时操作系统可能显示未知开发者提示。请先用 `SHA256SUMS.txt` 核验下载文件。
 

@@ -67,6 +67,12 @@ export type ConnectionTestResult = {
   duration_ms: number
 }
 
+export type ImportConnectionsResult = {
+	imported: number
+	renamed: number
+	names: string[]
+}
+
 export type TerminalTab = {
   id: string
   profileId: string

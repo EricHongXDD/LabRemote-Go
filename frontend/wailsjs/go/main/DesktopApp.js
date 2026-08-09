@@ -58,8 +58,16 @@ export function DownloadStatus(arg1) {
   return window['go']['main']['DesktopApp']['DownloadStatus'](arg1);
 }
 
+export function ExportConnections(arg1, arg2) {
+  return window['go']['main']['DesktopApp']['ExportConnections'](arg1, arg2);
+}
+
 export function ExportMCPAIGuide() {
   return window['go']['main']['DesktopApp']['ExportMCPAIGuide']();
+}
+
+export function ImportConnections(arg1, arg2) {
+  return window['go']['main']['DesktopApp']['ImportConnections'](arg1, arg2);
 }
 
 export function ListProfiles() {
@@ -96,6 +104,10 @@ export function ResizeTerminal(arg1, arg2, arg3) {
 
 export function SaveProfile(arg1) {
   return window['go']['main']['DesktopApp']['SaveProfile'](arg1);
+}
+
+export function SelectConnectionImportFile() {
+  return window['go']['main']['DesktopApp']['SelectConnectionImportFile']();
 }
 
 export function SelectDownloadDirectory() {
