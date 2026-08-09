@@ -109,6 +109,7 @@ export type UploadProgress = {
   files_completed: number
   directories_completed: number
   bytes_transferred: number
+	bytes_per_second: number
 	bytes_resumed: number
 	concurrent_files: number
   error_code?: string

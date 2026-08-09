@@ -325,7 +325,7 @@ fieldset select:disabled { color: #92a3b5; opacity: 1; }
 .upload-progress-stats { display: flex; justify-content: space-between; gap: 8px; margin: 11px 0 8px; color: #75879c; font: 9px Consolas, monospace; }
 .upload-current-item { min-height: 15px; overflow: hidden; color: #9eb0c3; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
 .upload-error { margin-top: 9px; color: #ff98a5; font-size: 10px; line-height: 1.5; }
-.transfer-acceleration { display: flex; gap: 12px; min-height: 15px; margin: -2px 0 6px; color: #53b995; font: 9px Consolas, monospace; }
+.transfer-acceleration { display: flex; flex-wrap: wrap; gap: 4px 12px; min-height: 15px; margin: -2px 0 6px; color: #53b995; font: 9px Consolas, monospace; }
 .remote-pathbar { display: grid; grid-template-columns: 34px minmax(0, 1fr) 58px; gap: 6px; margin-bottom: 10px; }
 .remote-pathbar input { min-width: 0; padding: 8px 9px; color: #dce8f3; outline: none; border: 1px solid #2a3b51; border-radius: 5px; background: #07101d; font: 10px Consolas, monospace; }
 .remote-pathbar input:focus { border-color: #369b74; }

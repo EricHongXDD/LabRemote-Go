@@ -22,9 +22,11 @@ import (
 
 const (
 	// SFTP 标准要求服务器支持 32 KiB 数据包；64 个在途请求可填满约 2 MiB 的 SSH 通道窗口。
-	uploadSFTPPacketSize     int64 = 32 * 1024
-	uploadSFTPPipelineBudget       = 64
-	uploadProgressBatchBytes int64 = 256 * 1024
+	uploadSFTPPacketSize      int64 = 32 * 1024
+	uploadSFTPPipelineBudget        = 64
+	uploadProgressBatchBytes  int64 = 256 * 1024
+	uploadSpeedSampleInterval       = 250 * time.Millisecond
+	uploadSpeedIdleTimeout          = 2 * time.Second
 )
 
 type uploadJob struct {
@@ -34,6 +36,52 @@ type uploadJob struct {
 	mu       sync.Mutex
 	progress model.UploadProgress
 	lastEmit time.Time
+	speed    uploadSpeedMeter
+}
+
+type uploadSpeedMeter struct {
+	sampleStartedAt time.Time
+	lastByteAt      time.Time
+	pendingBytes    int64
+	bytesPerSecond  int64
+}
+
+func (meter *uploadSpeedMeter) reset(now time.Time) {
+	meter.sampleStartedAt = now
+	meter.lastByteAt = time.Time{}
+	meter.pendingBytes = 0
+	meter.bytesPerSecond = 0
+}
+
+func (meter *uploadSpeedMeter) add(now time.Time, delta int64) int64 {
+	if delta <= 0 {
+		return meter.current(now)
+	}
+	if meter.sampleStartedAt.IsZero() || (!meter.lastByteAt.IsZero() && now.Sub(meter.lastByteAt) >= uploadSpeedIdleTimeout) {
+		meter.reset(now)
+	}
+	meter.pendingBytes += delta
+	meter.lastByteAt = now
+	elapsed := now.Sub(meter.sampleStartedAt)
+	if elapsed >= uploadSpeedSampleInterval {
+		sample := int64(float64(meter.pendingBytes) / elapsed.Seconds())
+		if meter.bytesPerSecond == 0 {
+			meter.bytesPerSecond = sample
+		} else {
+			// 指数平滑可抑制并发分片完成时的瞬时抖动，同时保留链路速度变化。
+			meter.bytesPerSecond = (meter.bytesPerSecond*2 + sample) / 3
+		}
+		meter.sampleStartedAt = now
+		meter.pendingBytes = 0
+	}
+	return meter.current(now)
+}
+
+func (meter *uploadSpeedMeter) current(now time.Time) int64 {
+	if meter.lastByteAt.IsZero() || now.Sub(meter.lastByteAt) >= uploadSpeedIdleTimeout {
+		return 0
+	}
+	return meter.bytesPerSecond
 }
 
 type uploadEntry struct {
@@ -111,7 +159,11 @@ func (m *Manager) UploadStatus(jobID string) (model.UploadProgress, error) {
 	}
 	job.mu.Lock()
 	defer job.mu.Unlock()
-	return job.progress, nil
+	value := job.progress
+	if value.State == model.UploadUploading {
+		value.BytesPerSecond = job.speed.current(time.Now())
+	}
+	return value, nil
 }
 
 func (m *Manager) CancelUpload(jobID string) error {
@@ -362,11 +414,26 @@ func (m *Manager) expireUpload(jobID string, expected *uploadJob) {
 
 func (m *Manager) updateUpload(job *uploadJob, force bool, update func(*model.UploadProgress)) model.UploadProgress {
 	job.mu.Lock()
+	previousState := job.progress.State
+	previousNetworkBytes := uploadNetworkBytes(job.progress)
 	if update != nil {
 		update(&job.progress)
 	}
-	value := job.progress
 	now := time.Now()
+	if job.progress.State == model.UploadUploading {
+		if previousState != model.UploadUploading {
+			job.speed.reset(now)
+		}
+		networkBytes := uploadNetworkBytes(job.progress)
+		if networkBytes > previousNetworkBytes {
+			job.progress.BytesPerSecond = job.speed.add(now, networkBytes-previousNetworkBytes)
+		} else {
+			job.progress.BytesPerSecond = job.speed.current(now)
+		}
+	} else {
+		job.progress.BytesPerSecond = 0
+	}
+	value := job.progress
 	emit := force || job.lastEmit.IsZero() || now.Sub(job.lastEmit) >= 150*time.Millisecond
 	if emit {
 		job.lastEmit = now
@@ -376,6 +443,10 @@ func (m *Manager) updateUpload(job *uploadJob, force bool, update func(*model.Up
 		m.events.Emit("upload:progress", value)
 	}
 	return value
+}
+
+func uploadNetworkBytes(progress model.UploadProgress) int64 {
+	return max(int64(0), progress.BytesTransferred-progress.BytesResumed)
 }
 
 func buildUploadPlan(ctx context.Context, localPaths []string, onScan func(string)) (uploadPlan, error) {
@@ -617,7 +688,7 @@ func uploadFile(
 			onResume(resumeOffset)
 		}
 	}
-	reader := &uploadProgressReader{ctx: ctx, reader: localFile, onBytes: onBytes}
+	reader := &uploadProgressReader{ctx: ctx, reader: localFile, onBytes: onBytes, lastFlush: time.Now()}
 	requestConcurrency := uploadRequestConcurrency(entry.size-resumeOffset, parallelFiles)
 	writtenNow, copyErr := remoteFile.ReadFromWithConcurrency(reader, requestConcurrency)
 	reader.flush()
@@ -690,10 +761,11 @@ func uploadFile(
 }
 
 type uploadProgressReader struct {
-	ctx     context.Context
-	reader  io.Reader
-	onBytes func(int64)
-	pending int64
+	ctx       context.Context
+	reader    io.Reader
+	onBytes   func(int64)
+	pending   int64
+	lastFlush time.Time
 }
 
 func (reader *uploadProgressReader) Read(buffer []byte) (int, error) {
@@ -703,8 +775,12 @@ func (reader *uploadProgressReader) Read(buffer []byte) (int, error) {
 	count, err := reader.reader.Read(buffer)
 	if count > 0 {
 		reader.pending += int64(count)
-		if reader.pending >= uploadProgressBatchBytes {
-			reader.flush()
+		now := time.Now()
+		if reader.lastFlush.IsZero() {
+			reader.lastFlush = now
+		}
+		if reader.pending >= uploadProgressBatchBytes || now.Sub(reader.lastFlush) >= uploadSpeedSampleInterval {
+			reader.flushAt(now)
 		}
 	}
 	if err != nil {
@@ -714,6 +790,10 @@ func (reader *uploadProgressReader) Read(buffer []byte) (int, error) {
 }
 
 func (reader *uploadProgressReader) flush() {
+	reader.flushAt(time.Now())
+}
+
+func (reader *uploadProgressReader) flushAt(now time.Time) {
 	if reader.pending <= 0 {
 		return
 	}
@@ -721,6 +801,7 @@ func (reader *uploadProgressReader) flush() {
 		reader.onBytes(reader.pending)
 	}
 	reader.pending = 0
+	reader.lastFlush = now
 }
 
 func uploadRequestConcurrency(remainingBytes int64, parallelFiles int) int {

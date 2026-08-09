@@ -489,6 +489,7 @@ export namespace model {
 	    files_completed: number;
 	    directories_completed: number;
 	    bytes_transferred: number;
+	    bytes_per_second: number;
 	    bytes_resumed: number;
 	    concurrent_files: number;
 	    error_code?: string;
@@ -512,6 +513,7 @@ export namespace model {
 	        this.files_completed = source["files_completed"];
 	        this.directories_completed = source["directories_completed"];
 	        this.bytes_transferred = source["bytes_transferred"];
+	        this.bytes_per_second = source["bytes_per_second"];
 	        this.bytes_resumed = source["bytes_resumed"];
 	        this.concurrent_files = source["concurrent_files"];
 	        this.error_code = source["error_code"];

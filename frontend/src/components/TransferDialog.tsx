@@ -54,6 +54,10 @@ function formatBytes(value: number): string {
   return `${size >= 10 || index === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[index]}`
 }
 
+function formatSpeed(value: number): string {
+  return `${formatBytes(value)}/s`
+}
+
 function progressStateLabel(mode: TransferMode, state?: string): string {
   if (!state) return '尚未开始'
   if (state === 'queued') return '等待开始'
@@ -425,6 +429,7 @@ function TransferOptions({active, overwrite, resume, setOverwrite, setResume, di
 }
 
 function ProgressCard({mode, progress, percent}: {mode: TransferMode; progress: UploadProgress | DownloadProgress | null; percent: number}) {
+  const uploadSpeed = mode === 'upload' ? (progress as UploadProgress | null)?.bytes_per_second || 0 : 0
   return <div className={`upload-progress-card ${progress?.state || ''}`}>
     <div className="upload-progress-heading"><strong>{progressStateLabel(mode, progress?.state)}</strong><em>{percent}%</em></div>
     <div className={`upload-progress-track ${progress?.state === 'scanning' ? 'indeterminate' : ''}`}><i style={{width: `${percent}%`}} /></div>
@@ -435,6 +440,7 @@ function ProgressCard({mode, progress, percent}: {mode: TransferMode; progress: 
     </div>
     <div className="transfer-acceleration">
       <span>并发文件 {progress?.concurrent_files || 0}</span>
+      {mode === 'upload' && <span>实时速度 {formatSpeed(uploadSpeed)}</span>}
       {(progress?.bytes_resumed || 0) > 0 && <span>已续传 {formatBytes(progress?.bytes_resumed || 0)}</span>}
     </div>
     <div className="upload-current-item" title={progress?.current_item}>{progress?.current_item || `等待选择并开始${mode === 'upload' ? '上传' : '下载'}`}</div>

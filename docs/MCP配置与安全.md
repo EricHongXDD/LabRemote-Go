@@ -351,7 +351,7 @@ MCP 工具不能读取、写入、缩放或关闭图形界面创建的终端。�
 {"job_id":"upload-..."}
 ```
 
-主要字段包括 `state`、`files_total`、`files_completed`、`directories_total`、`directories_completed`、`bytes_total`、`bytes_transferred`、`bytes_resumed`、`concurrent_files`、`error_code` 和 `error_message`。状态可能为：
+主要字段包括 `state`、`files_total`、`files_completed`、`directories_total`、`directories_completed`、`bytes_total`、`bytes_transferred`、`bytes_per_second`、`bytes_resumed`、`concurrent_files`、`error_code` 和 `error_message`。`bytes_per_second` 是全部并发文件的平滑聚合网络发送速度，不包含远端已经存在的续传字节；连续 2 秒没有发送数据时为 `0`。状态可能为：
 
 - 运行中：`queued`、`scanning`、`uploading`；
 - 终态：`completed`、`failed`、`cancelled`。
