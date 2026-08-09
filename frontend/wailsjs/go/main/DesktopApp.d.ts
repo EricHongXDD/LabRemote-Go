@@ -32,7 +32,11 @@ export function DisconnectProfile(arg1:string,arg2:boolean):Promise<void>;
 
 export function DownloadStatus(arg1:string):Promise<model.DownloadProgress>;
 
+export function ExportConnections(arg1:Array<string>,arg2:string):Promise<string>;
+
 export function ExportMCPAIGuide():Promise<string>;
+
+export function ImportConnections(arg1:string,arg2:string):Promise<app.ImportConnectionsResult>;
 
 export function ListProfiles():Promise<Array<model.ConnectionProfile>>;
 
@@ -51,6 +55,8 @@ export function RegenerateMCPToken():Promise<string>;
 export function ResizeTerminal(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function SaveProfile(arg1:app.SaveProfileRequest):Promise<model.ConnectionProfile>;
+
+export function SelectConnectionImportFile():Promise<string>;
 
 export function SelectDownloadDirectory():Promise<string>;
 

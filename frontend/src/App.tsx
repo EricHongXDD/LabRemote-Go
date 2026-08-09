@@ -10,7 +10,9 @@ import {
   CopyText,
   DeleteProfile,
   DisconnectProfile,
+	ExportConnections,
   ExportMCPAIGuide,
+	ImportConnections,
   ListProfiles,
   ListRemoteDirectory,
   MCPAccessToken,
@@ -19,6 +21,7 @@ import {
 	OpenBrowserResource,
   RegenerateMCPToken,
   SaveProfile,
+	SelectConnectionImportFile,
   SelectSSHPrivateKey,
   StartUpload,
   StartDownload,
@@ -33,12 +36,14 @@ import ProfileDialog from './components/ProfileDialog'
 import BrowserDialog from './components/BrowserDialog'
 import ConfirmDialog from './components/ConfirmDialog'
 import type {ConfirmOptions} from './components/ConfirmDialog'
+import ConnectionBundleDialog from './components/ConnectionBundleDialog'
+import type {ConnectionBundleMode} from './components/ConnectionBundleDialog'
 import TerminalView from './components/TerminalView'
 import TransferDialog from './components/TransferDialog'
 import type {TransferMode} from './components/TransferDialog'
 import {parseAppError} from './lib/errors'
 import {createProfileCopyDraft, usesIsolatedTunnel} from './lib/profile'
-import type {ConnectionProfile, ConnectionTestResult, DownloadProgress, DownloadRequest, RemoteDirectory, SaveProfileRequest, TerminalTab, TestConnectionRequest, UploadProgress, UploadRequest} from './types'
+import type {ConnectionProfile, ConnectionTestResult, DownloadProgress, DownloadRequest, ImportConnectionsResult, RemoteDirectory, SaveProfileRequest, TerminalTab, TestConnectionRequest, UploadProgress, UploadRequest} from './types'
 
 type MCPState = {enabled: boolean; address: string; port: number}
 type StatusValue = {connection_mode?: string; vpn?: {state: string; route_ready: boolean; reference_num: number}; ssh_connected?: boolean; ui_sessions?: number; mcp_sessions?: number; active_transfers?: number; browser_sessions?: number}
@@ -73,6 +78,7 @@ export default function App() {
   const [showToken, setShowToken] = useState(false)
   const [connectionMenu, setConnectionMenu] = useState<ConnectionMenu | null>(null)
   const [browserProfile, setBrowserProfile] = useState<ConnectionProfile | null>(null)
+	const [bundleDialog, setBundleDialog] = useState<{mode: ConnectionBundleMode; selectedIDs?: string[]} | null>(null)
   const [confirmation, setConfirmation] = useState<ConfirmOptions | null>(null)
   const confirmationResolver = useRef<((accepted: boolean) => void) | null>(null)
 
@@ -394,6 +400,40 @@ export default function App() {
     }
   }
 
+	const exportConnections = async (profileIDs: string[], password: string): Promise<boolean> => {
+		try {
+			const path = await ExportConnections(profileIDs, password)
+			if (!path) {
+				setNotice('已取消导出连接包')
+				return false
+			}
+			setNotice(`已导出 ${profileIDs.length} 个连接：${path}`)
+			return true
+		} catch (error) {
+			throw new Error(parseAppError(error).message)
+		}
+	}
+
+	const selectConnectionImportFile = async (): Promise<string> => {
+		try {
+			return await SelectConnectionImportFile()
+		} catch (error) {
+			throw new Error(parseAppError(error).message)
+		}
+	}
+
+	const importConnections = async (path: string, password: string): Promise<ImportConnectionsResult> => {
+		try {
+			const result = await ImportConnections(path, password) as ImportConnectionsResult
+			await refreshProfiles()
+			const renamedNotice = result.renamed > 0 ? `，其中 ${result.renamed} 个重名连接已自动改名` : ''
+			setNotice(`已安全导入 ${result.imported} 个连接${renamedNotice}`)
+			return result
+		} catch (error) {
+			throw new Error(parseAppError(error).message)
+		}
+	}
+
   const regenerateToken = async () => {
     if (!await confirmAction({
       title: '重新生成 MCP 令牌',
@@ -469,6 +509,11 @@ export default function App() {
             {profiles.length === 0 && <div className="empty-list"><span>＋</span><strong>尚未添加连接</strong><small>创建连接后即可使用终端、文件传输和网页访问。</small><button onClick={openNewProfile}>新建连接</button></div>}
           </div>
 
+			<div className="profile-portability-actions" role="toolbar" aria-label="连接导入导出">
+				<button disabled={profiles.length === 0} onClick={() => setBundleDialog({mode: 'export'})}><span>⇧</span>导出连接</button>
+				<button onClick={() => setBundleDialog({mode: 'import'})}><span>⇩</span>导入连接</button>
+			</div>
+
           <div className="connection-actions">
             <button className="sidebar-connect" disabled={!selected || busy} onClick={() => selected && void connect(selected)}><span>▶</span>{busy ? '正在连接…' : '连接'}</button>
             <button disabled={!selected} onClick={() => selected && void disconnect(selected)}><span>■</span>断开</button>
@@ -534,6 +579,15 @@ export default function App() {
       </footer>
 
       {dialogOpen && <ProfileDialog value={editing} copySourceProfileID={copySourceProfileID} onCancel={closeProfileDialog} onSave={save} onTestTunnel={testTunnel} onTestSSH={testSSH} onSelectSSHPrivateKey={SelectSSHPrivateKey} onClearSecret={clearSecret} />}
+		{bundleDialog && <ConnectionBundleDialog
+			profiles={profiles}
+			initialMode={bundleDialog.mode}
+			initialSelectedIDs={bundleDialog.selectedIDs}
+			onClose={() => setBundleDialog(null)}
+			onExport={exportConnections}
+			onSelectImportFile={selectConnectionImportFile}
+			onImport={importConnections}
+		/>}
       {browserProfile && <BrowserDialog profile={browserProfile} onClose={() => setBrowserProfile(null)} onOpen={targetURL => openBrowser(browserProfile, targetURL)} />}
       {transferMode && selected && <TransferDialog
         profile={selected}
@@ -557,6 +611,7 @@ export default function App() {
           <button onClick={() => { setTransferMode('upload'); setConnectionMenu(null) }}>⇅ 文件传输</button>
           <i />
           <button onClick={() => { openProfileCopy(connectionMenu.profile); setConnectionMenu(null) }}>复制连接</button>
+			<button onClick={() => { setBundleDialog({mode: 'export', selectedIDs: [connectionMenu.profile.id]}); setConnectionMenu(null) }}>导出此连接…</button>
           <button onClick={() => { openEditProfile(connectionMenu.profile); setConnectionMenu(null) }}>编辑连接</button>
           <button className="danger" onClick={() => { const profile = connectionMenu.profile; setConnectionMenu(null); void deleteProfile(profile) }}>删除连接</button>
         </nav>

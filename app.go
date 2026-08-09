@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,6 +52,7 @@ type DesktopApp struct {
 	service      *appcore.Service
 	mcp          *mcpserver.Controller
 	settings     *appcore.SettingsStore
+	configDir    string
 	events       *wailsEventSink
 	logger       *slog.Logger
 	logClosers   []io.Closer
@@ -90,6 +92,7 @@ func NewDesktopApp() (*DesktopApp, error) {
 		service:    service,
 		mcp:        mcpController,
 		settings:   appcore.NewSettingsStore(filepath.Join(configDirectory, "settings.json")),
+		configDir:  configDirectory,
 		events:     eventSink,
 		logger:     appLogger,
 		logClosers: []io.Closer{appCloser, auditCloser},
@@ -125,6 +128,67 @@ func (a *DesktopApp) shutdown(ctx context.Context) {
 
 func (a *DesktopApp) ListProfiles() ([]model.ConnectionProfile, error) {
 	return a.service.ListProfiles(a.ctx)
+}
+
+func (a *DesktopApp) ExportConnections(profileIDs []string, password string) (string, error) {
+	data, count, err := a.service.ExportConnectionBundle(a.ctx, profileIDs, password)
+	if err != nil {
+		return "", err
+	}
+	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "导出加密连接包",
+		DefaultFilename: fmt.Sprintf("LabRemote-connections-%s.lrcx", time.Now().Format("20060102-150405")),
+		Filters: []runtime.FileFilter{
+			{DisplayName: "LabRemote 加密连接包 (*.lrcx)", Pattern: "*.lrcx"},
+			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
+		},
+		CanCreateDirectories: true,
+	})
+	if err != nil || path == "" {
+		return "", err
+	}
+	if filepath.Ext(path) == "" {
+		path += ".lrcx"
+	}
+	if err := writePrivateFile(path, data); err != nil {
+		return "", model.NewAppError("CONNECTION_EXPORT_WRITE_FAILED", "无法写入加密连接包", "connection_export", true).WithDetails(map[string]any{"reason": err.Error()})
+	}
+	a.logger.Info("connection_bundle_exported", "profile_count", count)
+	return path, nil
+}
+
+func (a *DesktopApp) SelectConnectionImportFile() (string, error) {
+	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "选择 LabRemote 加密连接包",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "LabRemote 加密连接包 (*.lrcx)", Pattern: "*.lrcx"},
+			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
+		},
+	})
+}
+
+func (a *DesktopApp) ImportConnections(path, password string) (appcore.ImportConnectionsResult, error) {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "." || path == "" {
+		return appcore.ImportConnectionsResult{}, model.NewAppError("CONNECTION_IMPORT_FILE_REQUIRED", "请选择要导入的连接包", "connection_import", false)
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return appcore.ImportConnectionsResult{}, model.NewAppError("CONNECTION_IMPORT_READ_FAILED", "无法读取选择的连接包", "connection_import", false)
+	}
+	if info.Size() <= 0 || info.Size() > appcore.MaxConnectionBundleFileSize {
+		return appcore.ImportConnectionsResult{}, model.NewAppError("CONNECTION_BUNDLE_INVALID", "连接包为空或超过 64 MiB", "connection_import", false)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) > appcore.MaxConnectionBundleFileSize {
+		return appcore.ImportConnectionsResult{}, model.NewAppError("CONNECTION_IMPORT_READ_FAILED", "无法读取选择的连接包", "connection_import", true)
+	}
+	result, err := a.service.ImportConnectionBundle(a.ctx, data, password, filepath.Join(a.configDir, "private_keys"))
+	if err != nil {
+		return appcore.ImportConnectionsResult{}, err
+	}
+	a.logger.Info("connection_bundle_imported", "profile_count", result.Imported, "renamed_count", result.Renamed)
+	return result, nil
 }
 
 func (a *DesktopApp) SaveProfile(request appcore.SaveProfileRequest) (model.ConnectionProfile, error) {
@@ -369,11 +433,15 @@ func (a *DesktopApp) ExportMCPAIGuide() (string, error) {
 }
 
 func writeMCPAIGuide(path, content string) error {
+	return writePrivateFile(path, []byte(content))
+}
+
+func writePrivateFile(path string, content []byte) error {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
-	if _, err := io.WriteString(file, content); err != nil {
+	if _, err := file.Write(content); err != nil {
 		_ = file.Close()
 		return err
 	}
