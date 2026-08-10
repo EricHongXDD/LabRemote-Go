@@ -2,6 +2,7 @@ package sshclient
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"io"
 	"net"
@@ -25,7 +26,22 @@ func TestAdaptiveUploadPipelineImprovesHighLatencyLargeFileThroughput(t *testing
 	}
 }
 
+func TestUploadProgressWaitsForServerAcknowledgement(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), int(uploadProgressBatchBytes))
+	oneWayLatency := 40 * time.Millisecond
+	_, firstProgress := measurePipelinedSFTPUploadWithProgress(t, payload, 8, oneWayLatency)
+	if firstProgress < oneWayLatency {
+		t.Fatalf("首次进度在 %s 后上报，未等待服务器确认", firstProgress)
+	}
+}
+
 func measurePipelinedSFTPUpload(t *testing.T, payload []byte, concurrency int, oneWayLatency time.Duration) time.Duration {
+	t.Helper()
+	duration, _ := measurePipelinedSFTPUploadWithProgress(t, payload, concurrency, oneWayLatency)
+	return duration
+}
+
+func measurePipelinedSFTPUploadWithProgress(t *testing.T, payload []byte, concurrency int, oneWayLatency time.Duration) (time.Duration, time.Duration) {
 	t.Helper()
 	remoteRoot := t.TempDir()
 	clientConnection, proxyClient := net.Pipe()
@@ -58,8 +74,31 @@ func measurePipelinedSFTPUpload(t *testing.T, payload []byte, concurrency int, o
 	if err != nil {
 		t.Fatal(err)
 	}
+	localPath := filepath.Join(t.TempDir(), "large.bin")
+	if err := os.WriteFile(localPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	localFile, err := os.Open(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer localFile.Close()
+
+	var firstProgress time.Duration
 	started := time.Now()
-	written, err := remoteFile.ReadFromWithConcurrency(bytes.NewReader(payload), concurrency)
+	written, err := writeUploadFileWithConcurrency(
+		context.Background(),
+		localFile,
+		remoteFile,
+		0,
+		int64(len(payload)),
+		concurrency,
+		func(int64) {
+			if firstProgress == 0 {
+				firstProgress = time.Since(started)
+			}
+		},
+	)
 	duration := time.Since(started)
 	if closeErr := remoteFile.Close(); err == nil {
 		err = closeErr
@@ -77,7 +116,10 @@ func measurePipelinedSFTPUpload(t *testing.T, payload []byte, concurrency int, o
 	if sha256.Sum256(remotePayload) != sha256.Sum256(payload) {
 		t.Fatal("高并发上传后的远端文件内容不一致")
 	}
-	return duration
+	if len(payload) > 0 && firstProgress == 0 {
+		t.Fatal("上传完成后未收到进度回调")
+	}
+	return duration, firstProgress
 }
 
 type latencyChunk struct {

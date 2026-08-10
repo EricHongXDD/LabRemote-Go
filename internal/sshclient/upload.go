@@ -701,19 +701,13 @@ func uploadFile(
 			onResume(resumeOffset)
 		}
 	}
-	reader := &uploadProgressReader{ctx: ctx, reader: localFile, onBytes: onBytes, lastFlush: time.Now()}
 	requestConcurrency := uploadRequestConcurrency(entry.size-resumeOffset, parallelFiles)
-	writtenNow, copyErr := remoteFile.ReadFromWithConcurrency(reader, requestConcurrency)
-	reader.flush()
+	writtenNow, copyErr := writeUploadFileWithConcurrency(ctx, localFile, remoteFile, resumeOffset, entry.size, requestConcurrency, onBytes)
 	written := resumeOffset + writtenNow
 	if copyErr != nil {
-		// 并发写入出错时，SFTP 文件偏移量是可安全保留的最早位置。
-		safeOffset, seekErr := remoteFile.Seek(0, io.SeekCurrent)
 		closeErr := remoteFile.Close()
-		if seekErr == nil {
-			_ = client.Truncate(temporary, safeOffset)
-			written = safeOffset
-		}
+		// 并发写入返回已连续确认的安全前缀，截断乱序完成但无法续传的尾部。
+		_ = client.Truncate(temporary, written)
 		if errors.Is(copyErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 			return written, context.Canceled
 		}
@@ -773,48 +767,145 @@ func uploadFile(
 	return written, nil
 }
 
-type uploadProgressReader struct {
-	ctx       context.Context
-	reader    io.Reader
-	onBytes   func(int64)
-	pending   int64
-	lastFlush time.Time
+type uploadWriteChunk struct {
+	index  int64
+	offset int64
+	size   int
 }
 
-func (reader *uploadProgressReader) Read(buffer []byte) (int, error) {
-	if err := reader.ctx.Err(); err != nil {
-		return 0, err
+type uploadWriteResult struct {
+	chunk   uploadWriteChunk
+	written int
+	err     error
+}
+
+func writeUploadFileWithConcurrency(
+	ctx context.Context,
+	localFile *os.File,
+	remoteFile *sftp.File,
+	startOffset int64,
+	totalSize int64,
+	concurrency int,
+	onBytes func(int64),
+) (int64, error) {
+	remaining := totalSize - startOffset
+	if remaining <= 0 {
+		return 0, nil
 	}
-	count, err := reader.reader.Read(buffer)
-	if count > 0 {
-		reader.pending += int64(count)
+	chunkCount := 1 + (remaining-1)/uploadSFTPPacketSize
+	workerCount := min(max(1, concurrency), int(chunkCount))
+	transferContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan uploadWriteChunk)
+	results := make(chan uploadWriteResult, workerCount)
+	var workers sync.WaitGroup
+	for worker := 0; worker < workerCount; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			buffer := make([]byte, uploadSFTPPacketSize)
+			for chunk := range jobs {
+				if transferContext.Err() != nil {
+					return
+				}
+				data := buffer[:chunk.size]
+				read, readErr := localFile.ReadAt(data, chunk.offset)
+				if readErr != nil && !(errors.Is(readErr, io.EOF) && read == chunk.size) {
+					results <- uploadWriteResult{chunk: chunk, written: 0, err: readErr}
+					return
+				}
+				if read != chunk.size {
+					results <- uploadWriteResult{chunk: chunk, written: 0, err: io.ErrUnexpectedEOF}
+					return
+				}
+				if transferContext.Err() != nil {
+					return
+				}
+				written, writeErr := remoteFile.WriteAt(data, chunk.offset)
+				if writeErr == nil && written != chunk.size {
+					writeErr = io.ErrShortWrite
+				}
+				results <- uploadWriteResult{chunk: chunk, written: written, err: writeErr}
+				if writeErr != nil {
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for index := int64(0); index < chunkCount; index++ {
+			offset := startOffset + index*uploadSFTPPacketSize
+			size := int(min(uploadSFTPPacketSize, totalSize-offset))
+			select {
+			case jobs <- uploadWriteChunk{index: index, offset: offset, size: size}:
+			case <-transferContext.Done():
+				return
+			}
+		}
+	}()
+	go func() {
+		workers.Wait()
+		close(results)
+	}()
+
+	completed := make(map[int64]struct{}, workerCount)
+	nextSafeChunk := int64(0)
+	acknowledgedBytes := int64(0)
+	pendingBytes := int64(0)
+	lastReport := time.Now()
+	var firstErr error
+	flushProgress := func(now time.Time) {
+		if pendingBytes <= 0 {
+			return
+		}
+		if onBytes != nil {
+			onBytes(pendingBytes)
+		}
+		pendingBytes = 0
+		lastReport = now
+	}
+	for result := range results {
 		now := time.Now()
-		if reader.lastFlush.IsZero() {
-			reader.lastFlush = now
+		if result.written > 0 {
+			acknowledgedBytes += int64(result.written)
+			pendingBytes += int64(result.written)
+			if pendingBytes >= uploadProgressBatchBytes || now.Sub(lastReport) >= uploadSpeedSampleInterval {
+				flushProgress(now)
+			}
 		}
-		if reader.pending >= uploadProgressBatchBytes || now.Sub(reader.lastFlush) >= uploadSpeedSampleInterval {
-			reader.flushAt(now)
+		if result.err != nil {
+			if firstErr == nil {
+				firstErr = result.err
+				cancel()
+			}
+			continue
+		}
+		completed[result.chunk.index] = struct{}{}
+		for {
+			if _, ok := completed[nextSafeChunk]; !ok {
+				break
+			}
+			delete(completed, nextSafeChunk)
+			nextSafeChunk++
 		}
 	}
-	if err != nil {
-		reader.flush()
+	flushProgress(time.Now())
+	safeBytes := min(remaining, nextSafeChunk*uploadSFTPPacketSize)
+	if acknowledgedBytes > safeBytes && onBytes != nil {
+		// 乱序成功但位于首个失败分片之后的数据会被截断，进度同步回可续传前缀。
+		onBytes(safeBytes - acknowledgedBytes)
 	}
-	return count, err
-}
-
-func (reader *uploadProgressReader) flush() {
-	reader.flushAt(time.Now())
-}
-
-func (reader *uploadProgressReader) flushAt(now time.Time) {
-	if reader.pending <= 0 {
-		return
+	if firstErr != nil {
+		return safeBytes, firstErr
 	}
-	if reader.onBytes != nil {
-		reader.onBytes(reader.pending)
+	if err := ctx.Err(); err != nil {
+		return safeBytes, err
 	}
-	reader.pending = 0
-	reader.lastFlush = now
+	if safeBytes != remaining {
+		return safeBytes, io.ErrUnexpectedEOF
+	}
+	return safeBytes, nil
 }
 
 func uploadRequestConcurrency(remainingBytes int64, parallelFiles int) int {
