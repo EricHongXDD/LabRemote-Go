@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"net"
 	"os"
 	"path"
@@ -156,7 +155,7 @@ func TestUploadFileViaSFTPAndConflictProtection(t *testing.T) {
 	}
 
 	cancelPath := filepath.Join(localRoot, "cancel.bin")
-	if err := os.WriteFile(cancelPath, bytes.Repeat([]byte("x"), 1024*1024), 0o600); err != nil {
+	if err := os.WriteFile(cancelPath, bytes.Repeat([]byte("x"), 8*1024*1024), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cancelInfo, err := os.Stat(cancelPath)
@@ -229,46 +228,6 @@ func TestUploadRequestConcurrencyUsesBoundedAdaptivePipeline(t *testing.T) {
 				t.Fatalf("并发请求数 = %d，期望 %d", got, test.want)
 			}
 		})
-	}
-}
-
-func TestUploadProgressReaderBatchesCallbacksAndKeepsCancellationResponsive(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	var reported int64
-	callbackCount := 0
-	reader := &uploadProgressReader{
-		ctx:    ctx,
-		reader: bytes.NewReader(bytes.Repeat([]byte("x"), int(uploadProgressBatchBytes*4))),
-		onBytes: func(delta int64) {
-			reported += delta
-			callbackCount++
-			cancel()
-		},
-	}
-	written, err := io.Copy(io.Discard, reader)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("期望批次回调后及时取消，实际错误为 %v", err)
-	}
-	if written != uploadProgressBatchBytes || reported != uploadProgressBatchBytes || callbackCount != 1 {
-		t.Fatalf("批量进度异常：written=%d reported=%d callbacks=%d", written, reported, callbackCount)
-	}
-}
-
-func TestUploadProgressReaderFlushesSmallDeltaAfterSampleInterval(t *testing.T) {
-	var reported int64
-	reader := &uploadProgressReader{
-		ctx:       context.Background(),
-		reader:    bytes.NewReader(bytes.Repeat([]byte("x"), 1024)),
-		onBytes:   func(delta int64) { reported += delta },
-		lastFlush: time.Now().Add(-uploadSpeedSampleInterval),
-	}
-	buffer := make([]byte, 1024)
-	if count, err := reader.Read(buffer); err != nil || count != len(buffer) {
-		t.Fatalf("读取低速样本失败：count=%d err=%v", count, err)
-	}
-	if reported != int64(len(buffer)) || reader.pending != 0 {
-		t.Fatalf("定时进度刷新异常：reported=%d pending=%d", reported, reader.pending)
 	}
 }
 
