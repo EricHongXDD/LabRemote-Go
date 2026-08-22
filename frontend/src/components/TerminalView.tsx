@@ -6,6 +6,7 @@ import {WebLinksAddon} from '@xterm/addon-web-links'
 import {EventsOn} from '../../wailsjs/runtime/runtime'
 import {ResizeTerminal, WriteTerminal} from '../../wailsjs/go/main/DesktopApp'
 import type {TerminalTab} from '../types'
+import {resolveCtrlCAction} from '../lib/terminalKeyboard'
 
 type Props = {
   tab: TerminalTab
@@ -25,6 +26,7 @@ export default function TerminalView({tab, active, onReconnect}: Props) {
   const terminalRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const searchRef = useRef<SearchAddon | null>(null)
+  const lastCtrlCAtRef = useRef<number | null>(null)
   const [searchVisible, setSearchVisible] = useState(false)
   const [search, setSearch] = useState('')
 
@@ -59,11 +61,19 @@ export default function TerminalView({tab, active, onReconnect}: Props) {
     const resizeDisposable = terminal.onResize(({cols, rows}) => void ResizeTerminal(tab.id, cols, rows))
     terminal.attachCustomKeyEventHandler(event => {
       if (event.type !== 'keydown') return true
-      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'c') {
-        if (terminal.hasSelection()) void navigator.clipboard.writeText(terminal.getSelection())
+      if (event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === 'c') {
+        const currentTime = performance.now()
+        const action = resolveCtrlCAction(lastCtrlCAtRef.current, currentTime, terminal.hasSelection())
+        if (action === 'interrupt') {
+          lastCtrlCAtRef.current = null
+          void WriteTerminal(tab.id, '\u0003')
+        } else {
+          lastCtrlCAtRef.current = currentTime
+          if (action === 'copy') void navigator.clipboard.writeText(terminal.getSelection())
+        }
         return false
       }
-      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'v') {
+      if (event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === 'v') {
         void navigator.clipboard.readText().then(text => WriteTerminal(tab.id, text))
         return false
       }
@@ -109,12 +119,7 @@ export default function TerminalView({tab, active, onReconnect}: Props) {
           <button onClick={() => setSearchVisible(false)}>×</button>
         </div>
       )}
-      <div ref={container} className="terminal-canvas" onContextMenu={event => {
-        event.preventDefault()
-        const selected = terminalRef.current?.getSelection()
-        if (selected) void navigator.clipboard.writeText(selected)
-        else void navigator.clipboard.readText().then(text => WriteTerminal(tab.id, text))
-      }} />
+      <div ref={container} className="terminal-canvas" onContextMenu={event => event.preventDefault()} />
       {tab.closed && (
         <div className="terminal-disconnected">
           <strong>会话已断开</strong>
