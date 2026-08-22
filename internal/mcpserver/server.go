@@ -70,7 +70,7 @@ func (c *Controller) Start(ctx context.Context, port int) (Status, error) {
 	if err != nil {
 		return Status{}, model.NewAppError("MCP_BUSY", "MCP 本机端口无法监听", "mcp_start", true).WithDetails(map[string]any{"port": port})
 	}
-	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "LabRemote", Version: "1.5.3"}, nil)
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "LabRemote", Version: "1.5.4"}, nil)
 	addTools(mcpServer, c)
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer }, nil)
 	mux := http.NewServeMux()

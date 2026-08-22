@@ -62,6 +62,8 @@ export default function TerminalView({tab, active, onReconnect}: Props) {
     terminal.attachCustomKeyEventHandler(event => {
       if (event.type !== 'keydown') return true
       if (event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === 'c') {
+        // 阻止浏览器原生复制，避免手动复制与 xterm 的 copy 事件重复处理。
+        event.preventDefault()
         const currentTime = performance.now()
         const action = resolveCtrlCAction(lastCtrlCAtRef.current, currentTime, terminal.hasSelection())
         if (action === 'interrupt') {
@@ -74,6 +76,8 @@ export default function TerminalView({tab, active, onReconnect}: Props) {
         return false
       }
       if (event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === 'v') {
+        // Ctrl+V 由这里统一读取剪贴板；阻止浏览器默认 paste，避免同一内容再由 xterm 粘贴一次。
+        event.preventDefault()
         void navigator.clipboard.readText().then(text => WriteTerminal(tab.id, text))
         return false
       }
