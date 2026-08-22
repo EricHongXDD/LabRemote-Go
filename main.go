@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"os"
@@ -19,7 +20,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "LabRemote 初始化失败:", err)
 		os.Exit(1)
 	}
-	err = wails.Run(&options.App{
+	runErr := wails.Run(&options.App{
 		Title:            "LabRemote",
 		Width:            1280,
 		Height:           800,
@@ -32,8 +33,10 @@ func main() {
 		OnShutdown:       application.shutdown,
 		Bind:             []interface{}{application},
 	})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "LabRemote 运行失败:", err)
+	// 兜底执行一次清理；正常关闭时 OnShutdown 已经调用过，shutdownOnce 会避免重复释放。
+	application.shutdown(context.Background())
+	if runErr != nil {
+		fmt.Fprintln(os.Stderr, "LabRemote 运行失败:", runErr)
 		os.Exit(1)
 	}
 }

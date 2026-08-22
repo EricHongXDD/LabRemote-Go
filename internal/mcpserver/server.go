@@ -27,6 +27,7 @@ type Controller struct {
 	core         CoreService
 	secrets      secrets.Store
 	audit        *Auditor
+	ownerFile    string
 	mu           sync.Mutex
 	server       *http.Server
 	listener     net.Listener
@@ -41,8 +42,14 @@ type Controller struct {
 }
 
 func NewController(core CoreService, secretStore secrets.Store, auditor *Auditor) *Controller {
+	return NewControllerWithOwnerFile(core, secretStore, auditor, "")
+}
+
+// NewControllerWithOwnerFile 创建带有 MCP 进程所有权记录的控制器。
+func NewControllerWithOwnerFile(core CoreService, secretStore secrets.Store, auditor *Auditor, ownerFile string) *Controller {
 	return &Controller{
-		core: core, secrets: secretStore, audit: auditor, execSlots: make(chan struct{}, 4), sessions: make(map[string]struct{}), uploadJobs: make(map[string]string), downloadJobs: make(map[string]string),
+		core: core, secrets: secretStore, audit: auditor, ownerFile: ownerFile,
+		execSlots: make(chan struct{}, 4), sessions: make(map[string]struct{}), uploadJobs: make(map[string]string), downloadJobs: make(map[string]string),
 	}
 }
 
@@ -59,11 +66,11 @@ func (c *Controller) Start(ctx context.Context, port int) (Status, error) {
 	if c.server != nil {
 		return c.statusLocked(), nil
 	}
-	listener, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", itoa(port)))
+	listener, err := c.listenWithRecovery(ctx, port)
 	if err != nil {
 		return Status{}, model.NewAppError("MCP_BUSY", "MCP 本机端口无法监听", "mcp_start", true).WithDetails(map[string]any{"port": port})
 	}
-	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "LabRemote", Version: "1.5.2"}, nil)
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "LabRemote", Version: "1.5.3"}, nil)
 	addTools(mcpServer, c)
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer }, nil)
 	mux := http.NewServeMux()
@@ -79,6 +86,7 @@ func (c *Controller) Start(ctx context.Context, port int) (Status, error) {
 	c.server = server
 	c.listener = listener
 	c.port = port
+	c.writeOwnerRecord(port)
 	go func() {
 		_ = server.Serve(listener)
 	}()
@@ -90,6 +98,7 @@ func (c *Controller) Stop(ctx context.Context) error {
 	server := c.server
 	c.server = nil
 	listener := c.listener
+	port := c.port
 	c.listener = nil
 	c.port = 0
 	c.mu.Unlock()
@@ -106,6 +115,7 @@ func (c *Controller) Stop(ctx context.Context) error {
 	if listener != nil {
 		_ = listener.Close()
 	}
+	c.removeOwnerRecord(port)
 	c.uploadMu.Lock()
 	jobIDs := make([]string, 0, len(c.uploadJobs))
 	for jobID := range c.uploadJobs {

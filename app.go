@@ -87,7 +87,7 @@ func NewDesktopApp() (*DesktopApp, error) {
 	vpnManager := vpn.NewIsolatedManager(repository, secretStore, sink)
 	sshManager := sshclient.NewManager(repository, secretStore, knownHosts, sink, vpnManager)
 	service := appcore.NewService(repository, secretStore, vpnManager, sshManager, knownHosts)
-	mcpController := mcpserver.NewController(service, secretStore, mcpserver.NewAuditor(auditLogger))
+	mcpController := mcpserver.NewControllerWithOwnerFile(service, secretStore, mcpserver.NewAuditor(auditLogger), filepath.Join(configDirectory, "mcp-owner.json"))
 	return &DesktopApp{
 		service:    service,
 		mcp:        mcpController,
@@ -116,7 +116,8 @@ func (a *DesktopApp) startup(ctx context.Context) {
 
 func (a *DesktopApp) shutdown(ctx context.Context) {
 	a.shutdownOnce.Do(func() {
-		shutdownContext, cancel := context.WithTimeout(ctx, 12*time.Second)
+		// Wails 关闭窗口时传入的上下文可能已经被取消，清理资源不能依赖它继续有效。
+		shutdownContext, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
 		_ = a.mcp.Stop(shutdownContext)
 		a.service.Shutdown(shutdownContext)

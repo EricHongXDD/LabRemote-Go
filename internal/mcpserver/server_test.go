@@ -3,6 +3,8 @@ package mcpserver
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -109,6 +111,38 @@ func TestStopMCPDoesNotTouchUISessions(t *testing.T) {
 	}
 	if controller.Status().Enabled {
 		t.Fatal("停止后 MCP 状态仍为开启")
+	}
+}
+
+func TestMCPOwnerRecordIsRemovedAfterStop(t *testing.T) {
+	ownerFile := filepath.Join(t.TempDir(), "mcp-owner.json")
+	controller := NewControllerWithOwnerFile(&lifecycleCore{}, secrets.NewMemoryStore(), nil, ownerFile)
+	ctx := context.Background()
+	if _, err := controller.Start(ctx, freeLocalPort(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(ownerFile); err != nil {
+		t.Fatalf("MCP 启动后未写入所有权记录: %v", err)
+	}
+	if err := controller.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(ownerFile); !os.IsNotExist(err) {
+		t.Fatalf("MCP 停止后所有权记录仍存在: %v", err)
+	}
+}
+
+func TestStartReturnsBusyForUnrecognizedPortOwner(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	controller := NewController(&lifecycleCore{}, secrets.NewMemoryStore(), nil)
+	_, err = controller.Start(context.Background(), port)
+	if appErrorCode(err) != "MCP_BUSY" {
+		t.Fatalf("未识别的端口占用应返回 MCP_BUSY，实际为 %v", err)
 	}
 }
 
