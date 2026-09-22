@@ -94,6 +94,10 @@ export function OpenBrowserResource(arg1, arg2) {
   return window['go']['main']['DesktopApp']['OpenBrowserResource'](arg1, arg2);
 }
 
+export function PrepareBrowserResource(arg1, arg2) {
+  return window['go']['main']['DesktopApp']['PrepareBrowserResource'](arg1, arg2);
+}
+
 export function RegenerateMCPToken() {
   return window['go']['main']['DesktopApp']['RegenerateMCPToken']();
 }

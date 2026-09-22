@@ -218,7 +218,7 @@ func (s *session) authorize(target *url.URL, next http.Handler) http.Handler {
 		cookie, err := request.Cookie(s.cookieName)
 		if err != nil || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(s.token)) != 1 {
 			response.Header().Set("Cache-Control", "no-store")
-			http.Error(response, "LabRemote 网页访问会话无效，请从客户端重新打开。", http.StatusForbidden)
+			http.Error(response, "LabRemote 网页访问会话无效。请在客户端的“网页访问”中点击“复制访问链接”，将完整链接粘贴到此浏览器打开。请勿使用其他浏览器跳转后的地址。", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(response, request)
