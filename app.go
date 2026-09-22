@@ -217,12 +217,17 @@ func (a *DesktopApp) ConnectAndOpenTerminal(profileID string, cols, rows int) (s
 }
 
 func (a *DesktopApp) OpenBrowserResource(profileID, targetURL string) (string, error) {
-	localURL, err := a.service.OpenBrowserResource(a.ctx, profileID, targetURL)
+	localURL, err := a.PrepareBrowserResource(profileID, targetURL)
 	if err != nil {
 		return "", err
 	}
 	runtime.BrowserOpenURL(a.ctx, localURL)
 	return localURL, nil
+}
+
+// PrepareBrowserResource 创建可在本机任意浏览器使用的入口，不启动默认浏览器。
+func (a *DesktopApp) PrepareBrowserResource(profileID, targetURL string) (string, error) {
+	return a.service.OpenBrowserResource(a.ctx, profileID, targetURL)
 }
 
 func (a *DesktopApp) CloseBrowserAccess(profileID string) {

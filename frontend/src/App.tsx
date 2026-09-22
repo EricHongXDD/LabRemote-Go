@@ -19,6 +19,7 @@ import {
   MCPClientConfig,
   MCPStatus,
 	OpenBrowserResource,
+  PrepareBrowserResource,
   RegenerateMCPToken,
   SaveProfile,
 	SelectConnectionImportFile,
@@ -327,12 +328,13 @@ export default function App() {
     }
   }
 
-  const openBrowser = async (profile: ConnectionProfile, targetURL: string) => {
+  const openBrowser = async (profile: ConnectionProfile, targetURL: string, launch: boolean) => {
     try {
       setNotice(`正在通过 ${profile.display_name} 打开网页访问…`)
-      await runWithTrustConfirmation(profile, () => OpenBrowserResource(profile.id, targetURL))
-      setNotice(`已在浏览器中打开 ${targetURL}`)
+      const accessURL = await runWithTrustConfirmation(profile, () => launch ? OpenBrowserResource(profile.id, targetURL) : PrepareBrowserResource(profile.id, targetURL))
+      setNotice(launch ? `已在默认浏览器中打开 ${targetURL}` : '访问链接已生成，可复制到本机任意浏览器打开')
       setStatus(await ConnectionStatus(profile.id) as StatusValue)
+      return accessURL
     } catch (error) {
       const value = parseAppError(error)
       setNotice(value.message)
@@ -588,7 +590,7 @@ export default function App() {
 			onSelectImportFile={selectConnectionImportFile}
 			onImport={importConnections}
 		/>}
-      {browserProfile && <BrowserDialog profile={browserProfile} onClose={() => setBrowserProfile(null)} onOpen={targetURL => openBrowser(browserProfile, targetURL)} />}
+      {browserProfile && <BrowserDialog profile={browserProfile} onClose={() => setBrowserProfile(null)} onOpen={(targetURL, launch) => openBrowser(browserProfile, targetURL, launch)} onCopy={CopyText} />}
       {transferDialog && <TransferDialog
         profile={transferDialog.profile}
         initialMode={transferDialog.mode}

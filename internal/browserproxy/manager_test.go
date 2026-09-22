@@ -149,6 +149,65 @@ func TestNormalizeTargetURL(t *testing.T) {
 	}
 }
 
+func TestBrowserAccessLinkWorksAcrossIndependentBrowsers(t *testing.T) {
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RequestURI() != "/app?source=link" {
+			t.Errorf("目标路径丢失: %s", r.URL.RequestURI())
+		}
+		for _, cookie := range r.Cookies() {
+			if strings.HasPrefix(cookie.Name, "labremote_browser_") {
+				t.Error("认证凭据不应转发到远端")
+			}
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer remote.Close()
+	remoteURL, _ := url.Parse(remote.URL)
+	manager := NewManager(&mappingDialer{address: remoteURL.Host})
+	defer manager.CloseAll(context.Background())
+	link, err := manager.Open(context.Background(), "profile", "http://192.0.2.20/app?source=link")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(link)
+	plainURL := "http://" + parsed.Host + "/app?source=link"
+	// 两套 Cookie 存储模拟独立浏览器和无痕窗口，不共享第一套会话。
+	for index := 0; index < 2; index++ {
+		jar, _ := cookiejar.New(nil)
+		client := &http.Client{Jar: jar, Timeout: 5 * time.Second}
+		for _, check := range []struct {
+			address string
+			status  int
+		}{
+			{plainURL, http.StatusForbidden},
+			{link + "invalid", http.StatusForbidden},
+			{link, http.StatusOK},
+			{plainURL, http.StatusOK},
+			{link, http.StatusOK},
+		} {
+			response, err := client.Get(check.address)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+			if response.StatusCode != check.status {
+				t.Fatalf("浏览器 %d: status=%d, want=%d", index, response.StatusCode, check.status)
+			}
+		}
+	}
+	reused, err := manager.Open(context.Background(), "profile", "http://192.0.2.20/app?source=link")
+	if err != nil || reused != link || manager.Count("profile") != 1 {
+		t.Fatal("复制链接应复用同一代理")
+	}
+	manager.CloseProfile(context.Background(), "profile")
+	client := &http.Client{Timeout: time.Second}
+	if response, err := client.Get(link); err == nil {
+		_ = response.Body.Close()
+		t.Fatal("关闭访问后旧链接仍然有效")
+	}
+}
+
 func TestBrowserProxyErrorPageDoesNotExposeStructuredInternalError(t *testing.T) {
 	manager := NewManager(failingDialer{})
 	defer manager.CloseAll(context.Background())

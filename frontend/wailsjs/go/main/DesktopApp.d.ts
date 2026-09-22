@@ -50,6 +50,8 @@ export function MCPStatus():Promise<mcpserver.Status>;
 
 export function OpenBrowserResource(arg1:string,arg2:string):Promise<string>;
 
+export function PrepareBrowserResource(arg1:string,arg2:string):Promise<string>;
+
 export function RegenerateMCPToken():Promise<string>;
 
 export function ResizeTerminal(arg1:string,arg2:number,arg3:number):Promise<void>;
