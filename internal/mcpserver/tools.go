@@ -243,6 +243,12 @@ func (c *Controller) sshExec(ctx context.Context, _ *mcp.CallToolRequest, input 
 	if timeout <= 0 {
 		timeout = 30
 	}
+	if timeout > 300 {
+		timeout = 300
+	}
+	// 限制整个服务调用，使连接等待也能及时释放并发名额。
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	defer cancel()
 	start := time.Now()
 	value, err := c.core.MCPExec(ctx, model.ExecRequest{
 		ProfileID: input.ProfileID, Command: input.Command, Timeout: time.Duration(timeout) * time.Second, MaxOutputBytes: input.MaxOutputBytes,

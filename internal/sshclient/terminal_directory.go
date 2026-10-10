@@ -77,11 +77,13 @@ func (m *Manager) TerminalWorkingDirectory(ctx context.Context, sessionID string
 	if client == nil {
 		return "", model.NewAppError("TERMINAL_DIRECTORY_UNAVAILABLE", "SSH 连接已断开", "ssh_terminal", true)
 	}
-	query, err := client.NewSession()
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	query, err := m.newSession(ctx, session.profileID, client)
 	if err != nil {
 		return "", model.NewAppError("TERMINAL_DIRECTORY_UNAVAILABLE", "无法查询当前终端目录", "ssh_terminal", true)
 	}
-	defer query.Close()
+	defer func() { go query.Close() }()
 	command := fmt.Sprintf("readlink -e /proc/%d/cwd", session.remotePID)
 	type queryResult struct {
 		output []byte
@@ -96,10 +98,8 @@ func (m *Manager) TerminalWorkingDirectory(ctx context.Context, sessionID string
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		_ = query.Close()
 		return "", model.NewAppError("TERMINAL_DIRECTORY_UNAVAILABLE", "查询当前终端目录已取消", "ssh_terminal", true)
 	case <-timer.C:
-		_ = query.Close()
 		return "", model.NewAppError("TERMINAL_DIRECTORY_UNAVAILABLE", "查询当前终端目录超时", "ssh_terminal", true)
 	case result := <-resultChannel:
 		value := strings.TrimSpace(string(result.output))

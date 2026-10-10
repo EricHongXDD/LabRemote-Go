@@ -17,8 +17,10 @@ import (
 )
 
 type isolatedRuntime struct {
-	mu   sync.Mutex
-	link *softether.Link
+	mu          sync.Mutex
+	connectGate chan struct{}
+	generation  uint64
+	link        *softether.Link
 }
 
 type IsolatedManager struct {
@@ -42,7 +44,7 @@ func (m *IsolatedManager) runtime(profileID string) *isolatedRuntime {
 	defer m.mu.Unlock()
 	runtime := m.runtimes[profileID]
 	if runtime == nil {
-		runtime = &isolatedRuntime{}
+		runtime = &isolatedRuntime{connectGate: make(chan struct{}, 1)}
 		m.runtimes[profileID] = runtime
 	}
 	return runtime
@@ -53,6 +55,11 @@ func (m *IsolatedManager) EnsureProfile(_ context.Context, value model.Connectio
 }
 
 func (m *IsolatedManager) Connect(ctx context.Context, profileID string) (model.VPNStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return model.VPNStatus{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
 	value, err := m.repository.Get(ctx, profileID)
 	if err != nil {
 		m.states.Set(profileID, model.VPNFailed, "PROFILE_NOT_FOUND")
@@ -63,12 +70,20 @@ func (m *IsolatedManager) Connect(ctx context.Context, profileID string) (model.
 		return model.VPNStatus{}, err
 	}
 	runtime := m.runtime(profileID)
+	// 等待同一配置的连接必须可取消，状态锁不能覆盖认证和 DHCP 等网络操作。
+	select {
+	case runtime.connectGate <- struct{}{}:
+		defer func() { <-runtime.connectGate }()
+	case <-ctx.Done():
+		return model.VPNStatus{}, ctx.Err()
+	}
 	runtime.mu.Lock()
-	defer runtime.mu.Unlock()
 	if !value.UsesIsolatedTunnel() {
-		if runtime.link != nil {
-			_ = runtime.link.Close()
-			runtime.link = nil
+		link := runtime.link
+		runtime.link = nil
+		runtime.mu.Unlock()
+		if link != nil {
+			_ = link.Close()
 		}
 		return m.states.Update(profileID, func(status *model.VPNStatus) {
 			status.State = model.VPNNotRequired
@@ -83,9 +98,12 @@ func (m *IsolatedManager) Connect(ctx context.Context, profileID string) (model.
 		case <-runtime.link.Done():
 			runtime.link = nil
 		default:
+			runtime.mu.Unlock()
 			return m.states.Get(profileID), nil
 		}
 	}
+	generation := runtime.generation
+	runtime.mu.Unlock()
 	m.states.Set(profileID, model.VPNPreparing, "")
 	password, err := m.secrets.Get(ctx, model.VPNPasswordKey(profileID))
 	if err != nil {
@@ -111,7 +129,14 @@ func (m *IsolatedManager) Connect(ctx context.Context, profileID string) (model.
 		m.states.Set(profileID, model.VPNFailed, "TUNNEL_NETWORK_FAILED")
 		return model.VPNStatus{}, model.NewAppError("TUNNEL_NETWORK_FAILED", "隔离隧道已认证，但用户态网络初始化失败", "tunnel_network", true).WithDetails(map[string]any{"reason": err.Error()})
 	}
+	runtime.mu.Lock()
+	if runtime.generation != generation || ctx.Err() != nil {
+		runtime.mu.Unlock()
+		_ = link.Close()
+		return model.VPNStatus{}, model.NewAppError("TUNNEL_CONNECT_CANCELLED", "隔离隧道连接已取消", "tunnel_connect", true)
+	}
 	runtime.link = link
+	runtime.mu.Unlock()
 	lease := link.Lease()
 	status := m.states.Update(profileID, func(status *model.VPNStatus) {
 		status.State = model.VPNConnected
@@ -185,6 +210,7 @@ func (m *IsolatedManager) Disconnect(ctx context.Context, profileID string, _ bo
 	runtime.mu.Lock()
 	link := runtime.link
 	runtime.link = nil
+	runtime.generation++
 	runtime.mu.Unlock()
 	if !value.UsesIsolatedTunnel() {
 		if link != nil {

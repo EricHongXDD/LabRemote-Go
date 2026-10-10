@@ -23,6 +23,8 @@ import (
 
 type profileRuntime struct {
 	mu             sync.Mutex
+	connectGate    chan struct{}
+	generation     uint64
 	client         *ssh.Client
 	activeCommands atomic.Int32
 }
@@ -37,6 +39,7 @@ type terminalSession struct {
 	profileID string
 	owner     string
 	remotePID int
+	client    *ssh.Client
 	session   *ssh.Session
 	stdin     io.WriteCloser
 	buffer    *RingBuffer
@@ -78,44 +81,80 @@ func (m *Manager) runtime(profileID string) *profileRuntime {
 	defer m.mu.Unlock()
 	value := m.runtimes[profileID]
 	if value == nil {
-		value = &profileRuntime{}
+		value = &profileRuntime{connectGate: make(chan struct{}, 1)}
 		m.runtimes[profileID] = value
 	}
 	return value
 }
 
 func (m *Manager) Connect(ctx context.Context, profileID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
 	runtime := m.runtime(profileID)
+	// 连接串行化使用可取消的入口，状态锁只保护内存，不能覆盖网络等待。
+	select {
+	case runtime.connectGate <- struct{}{}:
+		defer func() { <-runtime.connectGate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	runtime.mu.Lock()
-	defer runtime.mu.Unlock()
 	if runtime.client != nil {
+		runtime.mu.Unlock()
 		return nil
 	}
-	value, err := m.repository.Get(ctx, profileID)
+	generation := runtime.generation
+	runtime.mu.Unlock()
+	client, err := m.dialSSH(ctx, profileID)
 	if err != nil {
 		return err
 	}
+	runtime.mu.Lock()
+	if runtime.generation != generation || ctx.Err() != nil {
+		runtime.mu.Unlock()
+		_ = client.Close()
+		return model.NewAppError("SSH_CONNECT_CANCELLED", "SSH 连接已取消", "ssh_connect", true)
+	}
+	runtime.client = client
+	runtime.mu.Unlock()
+	go m.watchClient(profileID, runtime, client)
+	go m.keepClientAlive(profileID, client)
+	m.events.Emit("ssh:status", map[string]any{"profile_id": profileID, "connected": true})
+	return nil
+}
+
+func (m *Manager) dialSSH(ctx context.Context, profileID string) (*ssh.Client, error) {
+	value, err := m.repository.Get(ctx, profileID)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := m.dialer.Connect(ctx, profileID); err != nil {
-		return err
+		return nil, err
 	}
 	authMethods, err := m.authenticationMethods(ctx, value)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	address := net.JoinHostPort(strings.Trim(value.SSH.ServerAddress, "[]"), strconv.Itoa(int(value.SSH.Port)))
 	connection, err := m.dialer.DialContext(ctx, profileID, "tcp", address)
 	if err != nil {
 		var appError *model.AppError
 		if errors.As(err, &appError) {
-			return appError
+			return nil, appError
 		}
-		return model.NewAppError("SSH_PORT_UNREACHABLE", "无法访问 SSH 服务器端口", "ssh_probe", true).WithDetails(map[string]any{"address": address})
+		return nil, model.NewAppError("SSH_PORT_UNREACHABLE", "无法访问 SSH 服务器端口", "ssh_probe", true).WithDetails(map[string]any{"address": address})
 	}
+	connected := false
 	defer func() {
-		if runtime.client == nil {
+		if !connected {
 			connection.Close()
 		}
 	}()
+	stopCancellation := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopCancellation()
 	_ = connection.SetDeadline(time.Now().Add(15 * time.Second))
 	config := &ssh.ClientConfig{
 		User:            value.SSH.Username,
@@ -127,16 +166,16 @@ func (m *Manager) Connect(ctx context.Context, profileID string) error {
 	if err != nil {
 		var appError *model.AppError
 		if errors.As(err, &appError) {
-			return appError
+			return nil, appError
 		}
-		return model.NewAppError("SSH_AUTH_FAILED", "SSH 握手或身份认证失败", "ssh_auth", false)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, model.NewAppError("SSH_AUTH_FAILED", "SSH 握手或身份认证失败", "ssh_auth", false)
 	}
 	_ = connection.SetDeadline(time.Time{})
-	client := ssh.NewClient(clientConnection, channels, requests)
-	runtime.client = client
-	go m.watchClient(profileID, runtime, client)
-	m.events.Emit("ssh:status", map[string]any{"profile_id": profileID, "connected": true})
-	return nil
+	connected = true
+	return ssh.NewClient(clientConnection, channels, requests), nil
 }
 
 func (m *Manager) authenticationMethods(ctx context.Context, value model.ConnectionProfile) ([]ssh.AuthMethod, error) {
@@ -183,7 +222,7 @@ func (m *Manager) DialWebContext(ctx context.Context, profileID, network, addres
 	if err == nil {
 		return connection, nil
 	}
-	if _, _, keepaliveErr := client.SendRequest("keepalive@openssh.com", false, nil); keepaliveErr == nil {
+	if keepaliveErr := m.probeClient(ctx, profileID, client); keepaliveErr == nil {
 		return nil, browserTargetError(address, err)
 	}
 	// SSH 传输已失效时只淘汰本次使用的旧客户端，避免并发请求关闭刚恢复的新连接。
@@ -224,14 +263,14 @@ func (m *Manager) OpenTerminal(ctx context.Context, profileID string, cols, rows
 	runtime := m.runtime(profileID)
 	runtime.mu.Lock()
 	client := runtime.client
+	runtime.mu.Unlock()
 	if client == nil {
-		runtime.mu.Unlock()
 		return "", model.NewAppError("SSH_SESSION_FAILED", "SSH 客户端未连接", "ssh_terminal", true)
 	}
-	sshSession, err := client.NewSession()
-	runtime.mu.Unlock()
+	setupContext, cancelSetup := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelSetup()
+	sshSession, err := m.newSession(setupContext, profileID, client)
 	if err != nil {
-		m.invalidateClient(profileID)
 		return "", model.NewAppError("SSH_SESSION_FAILED", "创建 SSH 会话失败", "ssh_terminal", true)
 	}
 	stdin, err := sshSession.StdinPipe()
@@ -250,18 +289,27 @@ func (m *Manager) OpenTerminal(ctx context.Context, profileID string, cols, rows
 		return "", model.NewAppError("SSH_SESSION_FAILED", "创建终端错误通道失败", "ssh_terminal", true)
 	}
 	modes := ssh.TerminalModes{ssh.ECHO: 1, ssh.TTY_OP_ISPEED: 14400, ssh.TTY_OP_OSPEED: 14400}
-	if err := sshSession.RequestPty("xterm-256color", rows, cols, modes); err != nil {
+	if err := m.sessionRequest(setupContext, profileID, client, func() error {
+		return sshSession.RequestPty("xterm-256color", rows, cols, modes)
+	}); err != nil {
 		sshSession.Close()
 		return "", model.NewAppError("SSH_SESSION_FAILED", "远程服务器拒绝 PTY 请求", "ssh_terminal", false)
 	}
-	trackedStdout, remotePID, err := startTrackedShell(ctx, sshSession, stdout)
+	// Shell 启动也可能等待服务端响应，取消时必须能释放调用入口。
+	var trackedStdout io.Reader
+	var remotePID int
+	err = m.sessionRequest(setupContext, profileID, client, func() error {
+		var startErr error
+		trackedStdout, remotePID, startErr = startTrackedShell(setupContext, sshSession, stdout)
+		return startErr
+	})
 	if err != nil {
 		sshSession.Close()
 		return "", model.NewAppError("SSH_SESSION_FAILED", "启动远程 Shell 失败", "ssh_terminal", true)
 	}
 	sessionID := owner + "-session-" + uuid.NewString()
 	entry := &terminalSession{
-		id: sessionID, profileID: profileID, owner: owner, remotePID: remotePID, session: sshSession, stdin: stdin,
+		id: sessionID, profileID: profileID, owner: owner, remotePID: remotePID, client: client, session: sshSession, stdin: stdin,
 		buffer: NewRingBuffer(2 * 1024 * 1024),
 	}
 	m.mu.Lock()
@@ -313,16 +361,20 @@ func (m *Manager) waitTerminal(session *terminalSession) {
 	})
 }
 
-func (m *Manager) WriteTerminal(_ context.Context, sessionID string, data []byte) error {
+func (m *Manager) WriteTerminal(ctx context.Context, sessionID string, data []byte) error {
 	session, err := m.getSession(sessionID)
 	if err != nil {
 		return err
 	}
-	_, err = session.stdin.Write(data)
-	return err
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	return m.sessionRequest(ctx, session.profileID, session.client, func() error {
+		_, err := session.stdin.Write(data)
+		return err
+	})
 }
 
-func (m *Manager) ResizeTerminal(_ context.Context, sessionID string, cols, rows int) error {
+func (m *Manager) ResizeTerminal(ctx context.Context, sessionID string, cols, rows int) error {
 	if cols < 20 || rows < 5 {
 		return model.NewAppError("SSH_SESSION_FAILED", "终端尺寸无效", "ssh_terminal", false)
 	}
@@ -330,7 +382,9 @@ func (m *Manager) ResizeTerminal(_ context.Context, sessionID string, cols, rows
 	if err != nil {
 		return err
 	}
-	return session.session.WindowChange(rows, cols)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	return m.sessionRequest(ctx, session.profileID, session.client, func() error { return session.session.WindowChange(rows, cols) })
 }
 
 func (m *Manager) CloseSession(_ context.Context, sessionID string) error {
@@ -340,7 +394,8 @@ func (m *Manager) CloseSession(_ context.Context, sessionID string) error {
 	}
 	if session.closed.CompareAndSwap(false, true) {
 		session.buffer.Close("会话已关闭")
-		return session.session.Close()
+		go session.session.Close()
+		return nil
 	}
 	return nil
 }
@@ -376,46 +431,50 @@ func (m *Manager) Exec(ctx context.Context, request model.ExecRequest) (model.Ex
 	if request.MaxOutputBytes > 4*1024*1024 {
 		request.MaxOutputBytes = 4 * 1024 * 1024
 	}
+	// 超时覆盖连接、会话创建和命令启动，不能只限制最后的 Wait。
+	ctx, cancel := context.WithTimeout(ctx, request.Timeout)
+	defer cancel()
+	start := time.Now()
 	if err := m.Connect(ctx, request.ProfileID); err != nil {
+		if ctx.Err() != nil {
+			return model.ExecResult{}, commandTimeout()
+		}
 		return model.ExecResult{}, err
 	}
 	runtime := m.runtime(request.ProfileID)
 	runtime.mu.Lock()
 	client := runtime.client
+	runtime.mu.Unlock()
 	if client == nil {
-		runtime.mu.Unlock()
 		return model.ExecResult{}, model.NewAppError("SSH_SESSION_FAILED", "SSH 客户端未连接", "ssh_exec", true)
 	}
-	session, err := client.NewSession()
-	runtime.mu.Unlock()
+	session, err := m.newSession(ctx, request.ProfileID, client)
 	if err != nil {
-		m.invalidateClient(request.ProfileID)
+		if ctx.Err() != nil {
+			return model.ExecResult{}, commandTimeout()
+		}
 		return model.ExecResult{}, model.NewAppError("SSH_SESSION_FAILED", "创建命令会话失败", "ssh_exec", true)
 	}
-	defer session.Close()
+	defer func() { go session.Close() }()
 	runtime.activeCommands.Add(1)
 	defer runtime.activeCommands.Add(-1)
 	stdout := NewLimitedWriter(request.MaxOutputBytes)
 	stderr := NewLimitedWriter(request.MaxOutputBytes)
 	session.Stdout = stdout
 	session.Stderr = stderr
-	start := time.Now()
-	if err := session.Start(request.Command); err != nil {
+	if err := m.sessionRequest(ctx, request.ProfileID, client, func() error { return session.Start(request.Command) }); err != nil {
+		if ctx.Err() != nil {
+			return model.ExecResult{}, commandTimeout()
+		}
 		return model.ExecResult{}, model.NewAppError("SSH_SESSION_FAILED", "发送 SSH 命令失败", "ssh_exec", true)
 	}
 	wait := make(chan error, 1)
 	go func() { wait <- session.Wait() }()
-	timer := time.NewTimer(request.Timeout)
-	defer timer.Stop()
 	var waitErr error
 	select {
 	case waitErr = <-wait:
 	case <-ctx.Done():
-		session.Close()
-		return model.ExecResult{}, model.NewAppError("SSH_COMMAND_TIMEOUT", "SSH 命令已取消", "ssh_exec", true)
-	case <-timer.C:
-		session.Close()
-		return model.ExecResult{}, model.NewAppError("SSH_COMMAND_TIMEOUT", "SSH 命令执行超时", "ssh_exec", true)
+		return model.ExecResult{}, commandTimeout()
 	}
 	exitCode := 0
 	if waitErr != nil {
@@ -551,6 +610,7 @@ func (m *Manager) invalidateClient(profileID string) {
 	runtime.mu.Lock()
 	client := runtime.client
 	runtime.client = nil
+	runtime.generation++
 	runtime.mu.Unlock()
 	if client != nil {
 		_ = client.Close()
@@ -559,16 +619,20 @@ func (m *Manager) invalidateClient(profileID string) {
 }
 
 func (m *Manager) invalidateClientIf(profileID string, expected *ssh.Client) {
-	runtime := m.runtime(profileID)
-	runtime.mu.Lock()
-	if runtime.client != expected {
-		runtime.mu.Unlock()
+	if expected == nil {
 		return
 	}
-	runtime.client = nil
+	runtime := m.runtime(profileID)
+	runtime.mu.Lock()
+	matched := runtime.client == expected
+	if matched {
+		runtime.client = nil
+	}
 	runtime.mu.Unlock()
 	_ = expected.Close()
-	m.events.Emit("ssh:status", map[string]any{"profile_id": profileID, "connected": false})
+	if matched {
+		m.events.Emit("ssh:status", map[string]any{"profile_id": profileID, "connected": false})
+	}
 }
 
 func (m *Manager) watchClient(profileID string, runtime *profileRuntime, client *ssh.Client) {
