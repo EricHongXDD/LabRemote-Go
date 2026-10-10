@@ -146,7 +146,7 @@ export default function ProfileDialog({value, copySourceProfileID, onCancel, onS
     setTestFeedback(current => ({...current, [kind]: undefined}))
     try {
       const result = kind === 'tunnel' ? await onTestTunnel(testRequest()) : await onTestSSH(testRequest())
-      const address = result.ip_address ? ` · 地址 ${result.ip_address}` : ''
+      const address = result.ip_address ? ` · 本机隧道地址 ${result.ip_address}` : ''
       const duration = result.duration_ms > 0 ? ` · ${(result.duration_ms / 1000).toFixed(1)} 秒` : ''
       setTestFeedback(current => ({...current, [kind]: {state: 'success', message: `${result.message}${address}${duration}`}}))
     } catch (reason) {

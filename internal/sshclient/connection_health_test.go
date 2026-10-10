@@ -94,6 +94,10 @@ func healthTestManager(t *testing.T, mode string) (*Manager, string, <-chan stru
 							if mode == "start" || mode == "sftp" {
 								continue
 							}
+							if mode == "pty-denied" && request.Type == "pty-req" {
+								_ = request.Reply(false, nil)
+								continue
+							}
 							_ = request.Reply(true, nil)
 							if mode == "sftp-healthy" && request.Type == "subsystem" {
 								go func() {
@@ -352,5 +356,43 @@ func TestStaleClientCleanupPreservesReplacement(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("旧连接没有释放")
+	}
+}
+
+func TestTerminalProbeRequiresSessionAndPTY(t *testing.T) {
+	for _, test := range []struct{ mode, expected string }{
+		{"wait", ""}, {"reject", "SSH_SESSION_LIMIT"}, {"pty-denied", "SSH_SESSION_FAILED"}, {"channel", "SSH_SESSION_TIMEOUT"},
+	} {
+		t.Run(test.mode, func(t *testing.T) {
+			manager, id, _ := healthTestManager(t, test.mode)
+			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			defer cancel()
+			err := manager.ProbeTerminal(ctx, id)
+			if test.expected == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				var appError *model.AppError
+				if !errors.As(err, &appError) || appError.Code != test.expected || appError.Details["reason"] == "" {
+					t.Fatalf("未保留失败阶段与原因: %v", err)
+				}
+			}
+			ui, mcp, commands := manager.Counts(id)
+			if ui+mcp+commands != 0 {
+				t.Fatal("连接测试不应保留终端或命令")
+			}
+		})
+	}
+}
+
+func TestHandshakeTimeoutDoesNotReportCredentialFailure(t *testing.T) {
+	manager, id, _ := healthTestManager(t, "handshake")
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := manager.Connect(ctx, id)
+	var appError *model.AppError
+	if !errors.As(err, &appError) || appError.Code != "SSH_HANDSHAKE_TIMEOUT" || !appError.Retryable || appError.Details["reason"] == "" {
+		t.Fatalf("无响应的握手不应归因于密码错误: %v", err)
 	}
 }
