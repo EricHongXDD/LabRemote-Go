@@ -70,7 +70,7 @@ func (c *Controller) Start(ctx context.Context, port int) (Status, error) {
 	if err != nil {
 		return Status{}, model.NewAppError("MCP_BUSY", "MCP 本机端口无法监听", "mcp_start", true).WithDetails(map[string]any{"port": port})
 	}
-	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "LabRemote", Version: "1.5.5"}, nil)
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "LabRemote", Version: "1.5.6"}, nil)
 	addTools(mcpServer, c)
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer }, nil)
 	mux := http.NewServeMux()
@@ -78,10 +78,11 @@ func (c *Controller) Start(ctx context.Context, port int) (Status, error) {
 	server := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       2 * time.Minute,
-		WriteTimeout:      2 * time.Minute,
-		IdleTimeout:       2 * time.Minute,
-		MaxHeaderBytes:    16 * 1024,
+		ReadTimeout:       6 * time.Minute,
+		// SSE 是长期流；工具自身限制执行时间，不能用固定写超时定期切断流。
+		WriteTimeout:   0,
+		IdleTimeout:    2 * time.Minute,
+		MaxHeaderBytes: 16 * 1024,
 	}
 	c.server = server
 	c.listener = listener

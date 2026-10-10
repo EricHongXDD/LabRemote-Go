@@ -126,7 +126,9 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("5. 用户取消任务时调用 `file_download_cancel`。MCP 只能查询或取消当前服务实例自己创建的下载任务，不能操作图形界面任务。\n\n")
 
 	guide.WriteString("## 9. 参数限制与状态解释\n\n")
-	guide.WriteString("- `ssh_exec.timeout_seconds`：默认 30，最大 300 秒。\n")
+	guide.WriteString("- `ssh_exec.timeout_seconds`：默认 30，最大 300 秒，覆盖连接、会话创建、命令启动和执行全过程；超时后不自动重放命令。\n")
+	guide.WriteString("- SSH 每 15 秒进行一次心跳检测，10 秒无响应会淘汰失效连接；下一次操作可重新连接。状态查询不等待网络操作完成。\n")
+	guide.WriteString("- 文件传输使用独立 SSH 连接，取消不关闭已有终端。连续 60 秒没有 SFTP 数据活动会结束停滞传输，保留安全续传分片；保存原 job_id，恢复连接后用 resume=true 续传尚未完成的文件。\n")
 	guide.WriteString("- `ssh_exec.max_output_bytes`：stdout/stderr 各默认 1 MiB，最大 4 MiB。\n")
 	guide.WriteString("- 非交互命令最多并发 4 个；MCP 交互会话最多 8 个。\n")
 	guide.WriteString("- `ssh_session_write` 单次解码后最多 65536 字节。\n")

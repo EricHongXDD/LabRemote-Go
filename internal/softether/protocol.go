@@ -96,9 +96,10 @@ func Open(ctx context.Context, config Config) (*Session, error) {
 		return nil, err
 	}
 	keep := false
+	defer stream.stopCancellation()
 	defer func() {
 		if !keep {
-			_ = stream.secure.Close()
+			_ = stream.raw.Close()
 		}
 	}()
 	randomValue, err := exchangeSignature(stream)
@@ -134,7 +135,8 @@ func EnumerateHubs(ctx context.Context, config Config) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer stream.secure.Close()
+	defer stream.stopCancellation()
+	defer stream.raw.Close()
 	if _, err := exchangeSignature(stream); err != nil {
 		return nil, err
 	}
@@ -162,10 +164,11 @@ func EnumerateHubs(ctx context.Context, config Config) ([]string, error) {
 }
 
 type protocolStream struct {
-	raw    net.Conn
-	secure *tls.Conn
-	reader *bufio.Reader
-	host   string
+	raw              net.Conn
+	secure           *tls.Conn
+	reader           *bufio.Reader
+	host             string
+	stopCancellation func() bool
 }
 
 func openStream(ctx context.Context, config Config) (*protocolStream, error) {
@@ -174,7 +177,13 @@ func openStream(ctx context.Context, config Config) (*protocolStream, error) {
 	if err != nil {
 		return nil, err
 	}
-	_ = raw.SetDeadline(time.Now().Add(20 * time.Second))
+	// TLS 后的认证读写同样需要响应取消，不能只限制握手本身。
+	stopCancellation := context.AfterFunc(ctx, func() { _ = raw.Close() })
+	deadline := time.Now().Add(20 * time.Second)
+	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Before(deadline) {
+		deadline = callerDeadline
+	}
+	_ = raw.SetDeadline(deadline)
 	tlsConfig := &tls.Config{
 		ServerName:         strings.Trim(config.Server, "[]"),
 		MinVersion:         tls.VersionTLS12,
@@ -200,10 +209,11 @@ func openStream(ctx context.Context, config Config) (*protocolStream, error) {
 	}
 	secure := tls.Client(raw, tlsConfig)
 	if err := secure.HandshakeContext(ctx); err != nil {
+		stopCancellation()
 		_ = raw.Close()
 		return nil, err
 	}
-	return &protocolStream{raw: raw, secure: secure, reader: bufio.NewReader(secure), host: address}, nil
+	return &protocolStream{raw: raw, secure: secure, reader: bufio.NewReader(secure), host: address, stopCancellation: stopCancellation}, nil
 }
 
 func verifyCertificateName(certificate *x509.Certificate, hostname string) error {

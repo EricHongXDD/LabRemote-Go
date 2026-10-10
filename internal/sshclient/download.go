@@ -53,11 +53,11 @@ func (m *Manager) ListRemoteDirectory(ctx context.Context, profileID string, dir
 	if client == nil {
 		return model.RemoteDirectory{}, model.NewAppError("SSH_SESSION_FAILED", "SSH 客户端未连接", "file_download", true)
 	}
-	sftpClient, err := sftp.NewClient(client)
+	sftpClient, closeSFTP, err := m.newSFTPClient(ctx, profileID)
 	if err != nil {
-		return model.RemoteDirectory{}, model.NewAppError("SFTP_UNAVAILABLE", "远端 SSH 服务未提供 SFTP 子系统", "file_download", false)
+		return model.RemoteDirectory{}, err
 	}
-	defer sftpClient.Close()
+	defer closeSFTP()
 	resolved, info, err := resolveRemoteLocation(ctx, sftpClient, directory)
 	if err != nil {
 		return model.RemoteDirectory{}, err
@@ -227,6 +227,8 @@ func downloadStateActive(state model.DownloadState) bool {
 }
 
 func (m *Manager) runDownload(job *downloadJob) {
+	transferContext, stopTransfers := context.WithCancel(job.ctx)
+	defer stopTransfers()
 	m.updateDownload(job, true, func(progress *model.DownloadProgress) {
 		progress.State = model.DownloadScanning
 	})
@@ -238,12 +240,12 @@ func (m *Manager) runDownload(job *downloadJob) {
 		m.finishDownload(job, model.NewAppError("SSH_SESSION_FAILED", "SSH 连接已断开", "file_download", true))
 		return
 	}
-	sftpClient, err := sftp.NewClient(client)
+	sftpClient, closeSFTP, err := m.newSFTPClient(transferContext, job.request.ProfileID)
 	if err != nil {
-		m.finishDownload(job, model.NewAppError("SFTP_UNAVAILABLE", "远端 SSH 服务未提供 SFTP 子系统", "file_download", false))
+		m.finishDownload(job, err)
 		return
 	}
-	defer sftpClient.Close()
+	defer closeSFTP()
 	plan, err := buildDownloadPlan(job.ctx, sftpClient, job.request.RemotePaths, func(name string) {
 		m.updateDownload(job, false, func(progress *model.DownloadProgress) {
 			progress.CurrentItem = name
@@ -286,8 +288,6 @@ func (m *Manager) runDownload(job *downloadJob) {
 	m.updateDownload(job, true, func(progress *model.DownloadProgress) {
 		progress.ConcurrentFiles = fileConcurrency
 	})
-	transferContext, stopTransfers := context.WithCancel(job.ctx)
-	defer stopTransfers()
 	entries := make(chan downloadEntry)
 	errorsChannel := make(chan error, 1)
 	var workers sync.WaitGroup

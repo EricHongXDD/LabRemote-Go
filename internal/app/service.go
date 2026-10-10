@@ -589,9 +589,7 @@ func sameSSHEndpoint(left, right model.ConnectionProfile) bool {
 }
 
 func (s *Service) EnsureConnected(ctx context.Context, profileID string) error {
-	if _, err := s.vpn.Connect(ctx, profileID); err != nil {
-		return err
-	}
+	// SSH 管理器负责建立底层传输，并对整个连接过程施加超时。
 	return s.ssh.Connect(ctx, profileID)
 }
 
@@ -774,9 +772,6 @@ func (s *Service) MCPExec(ctx context.Context, request model.ExecRequest) (model
 		return model.ExecResult{}, err
 	}
 	if err := policy.RequireExec(value); err != nil {
-		return model.ExecResult{}, err
-	}
-	if err := s.EnsureConnected(ctx, request.ProfileID); err != nil {
 		return model.ExecResult{}, err
 	}
 	return s.ssh.Exec(ctx, request)

@@ -276,16 +276,18 @@ func (m *Manager) runUpload(job *uploadJob) {
 		m.finishUpload(job, model.NewAppError("SSH_SESSION_FAILED", "SSH 连接已断开", "file_upload", true))
 		return
 	}
-	sftpClient, err := sftp.NewClient(
-		client,
+	transferContext, stopTransfers := context.WithCancel(job.ctx)
+	defer stopTransfers()
+	sftpClient, closeSFTP, err := m.newSFTPClient(
+		transferContext, job.request.ProfileID,
 		sftp.UseConcurrentWrites(true),
 		sftp.MaxConcurrentRequestsPerFile(uploadSFTPPipelineBudget),
 	)
 	if err != nil {
-		m.finishUpload(job, model.NewAppError("SFTP_UNAVAILABLE", "远端 SSH 服务未提供 SFTP 子系统", "file_upload", false))
+		m.finishUpload(job, err)
 		return
 	}
-	defer sftpClient.Close()
+	defer closeSFTP()
 
 	remoteRoot, err := prepareRemoteRoot(job.ctx, sftpClient, job.request.RemoteDirectory)
 	if err != nil {
@@ -317,8 +319,6 @@ func (m *Manager) runUpload(job *uploadJob) {
 	m.updateUpload(job, true, func(progress *model.UploadProgress) {
 		progress.ConcurrentFiles = fileConcurrency
 	})
-	transferContext, stopTransfers := context.WithCancel(job.ctx)
-	defer stopTransfers()
 	entries := make(chan uploadEntry)
 	errorsChannel := make(chan error, 1)
 	var workers sync.WaitGroup
