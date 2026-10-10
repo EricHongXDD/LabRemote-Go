@@ -523,7 +523,11 @@ func (s *Service) runConnectionTest(ctx context.Context, request TestConnectionR
 	if err != nil {
 		return ConnectionTestResult{}, err
 	}
-	message := "SSH 服务器端口、主机指纹和身份认证均测试成功"
+	// 认证成功不等于可以打开终端，测试必须继续验证会话通道和 PTY。
+	if err := sshManager.ProbeTerminal(probeContext, value.ID); err != nil {
+		return ConnectionTestResult{}, err
+	}
+	message := "SSH 端口、主机指纹、身份认证、会话通道和 PTY 均测试成功"
 	if !value.UsesIsolatedTunnel() {
 		message += "（直接连接）"
 	}

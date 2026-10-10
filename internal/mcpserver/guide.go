@@ -152,6 +152,8 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("| `TUNNEL_CERT_UNKNOWN` / `SSH_HOST_KEY_UNKNOWN` | 请用户先在 LabRemote 图形界面核对并确认指纹 |\n")
 	guide.WriteString("| `TUNNEL_CERT_CHANGED` / `SSH_HOST_KEY_CHANGED` | 立即停止，提示用户联系管理员核实，绝不绕过 |\n")
 	guide.WriteString("| `SSH_AUTH_FAILED` | 请用户在 LabRemote 编辑连接并更新凭据 |\n")
+	guide.WriteString("| `SSH_HANDSHAKE_TIMEOUT` / `SSH_SESSION_TIMEOUT` | 网络或服务器响应超时；身份认证成功也不保证会话通道可用 |\n")
+	guide.WriteString("| `SSH_SESSION_LIMIT` / `SSH_SESSION_DENIED` | 服务器拒绝新会话；检查会话资源、通道数量或账号策略 |\n")
 	guide.WriteString("| `SSH_COMMAND_TIMEOUT` | 拆分任务或在理由充分时提高超时，上限 300 秒 |\n")
 	guide.WriteString("| `MCP_BUSY` | 降低并发、关闭不用的会话，稍后重试 |\n")
 	guide.WriteString("| `MCP_SESSION_NOT_FOUND` | 丢弃旧 ID，重新打开会话 |\n")

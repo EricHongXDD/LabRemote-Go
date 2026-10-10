@@ -2,7 +2,9 @@ package sshclient
 
 import (
 	"context"
+	"errors"
 	"io"
+	"net"
 	"sync/atomic"
 	"time"
 
@@ -13,6 +15,59 @@ import (
 
 func commandTimeout() error {
 	return model.NewAppError("SSH_COMMAND_TIMEOUT", "SSH 命令已取消或执行超时（包含连接与启动阶段）", "ssh_exec", true)
+}
+
+func sessionFailure(ctx context.Context, err error, message, stage string) error {
+	code := "SSH_SESSION_FAILED"
+	var channelError *ssh.OpenChannelError
+	var networkError net.Error
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(ctx.Err(), context.DeadlineExceeded), errors.As(err, &networkError) && networkError.Timeout():
+		code = "SSH_SESSION_TIMEOUT"
+		message = "SSH 已认证，但服务器未及时响应会话请求，请检查网络和服务器状态"
+	case errors.Is(err, context.Canceled), errors.Is(ctx.Err(), context.Canceled):
+		code = "SSH_SESSION_CANCELLED"
+		message = "SSH 会话请求已取消"
+	case errors.As(err, &channelError):
+		if channelError.Reason == ssh.ResourceShortage {
+			code = "SSH_SESSION_LIMIT"
+			message = "SSH 服务器拒绝新会话：会话数量或服务器资源受限"
+		} else {
+			code = "SSH_SESSION_DENIED"
+			message = "SSH 服务器拒绝创建会话通道"
+		}
+	case errors.Is(err, io.EOF), errors.Is(err, net.ErrClosed):
+		code = "SSH_CONNECTION_CLOSED"
+		message = "SSH 连接已关闭，请重新连接"
+	}
+	return model.NewAppError(code, message, stage, code != "SSH_SESSION_DENIED").WithDetails(map[string]any{"reason": err.Error()})
+}
+
+// ProbeTerminal 验证真实会话通道与 PTY，但不启动 Shell 或执行用户命令。
+func (m *Manager) ProbeTerminal(ctx context.Context, profileID string) error {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if err := m.Connect(ctx, profileID); err != nil {
+		return err
+	}
+	runtime := m.runtime(profileID)
+	runtime.mu.Lock()
+	client := runtime.client
+	runtime.mu.Unlock()
+	if client == nil {
+		return model.NewAppError("SSH_CONNECTION_CLOSED", "SSH 连接已关闭，请重新连接", "ssh_terminal", true)
+	}
+	session, err := m.newSession(ctx, profileID, client)
+	if err != nil {
+		return sessionFailure(ctx, err, "创建 SSH 会话失败", "ssh_terminal")
+	}
+	defer func() { go session.Close() }()
+	if err := m.sessionRequest(ctx, profileID, client, func() error {
+		return session.RequestPty("xterm-256color", 24, 80, ssh.TerminalModes{ssh.ECHO: 1})
+	}); err != nil {
+		return sessionFailure(ctx, err, "SSH 已认证，但服务器拒绝终端 PTY 请求", "ssh_terminal")
+	}
+	return nil
 }
 
 // sessionRequest 为没有原生上下文支持的 SSH 请求提供退出边界。

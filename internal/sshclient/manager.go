@@ -168,10 +168,14 @@ func (m *Manager) dialSSH(ctx context.Context, profileID string) (*ssh.Client, e
 		if errors.As(err, &appError) {
 			return nil, appError
 		}
+		var networkError net.Error
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) || (errors.As(err, &networkError) && networkError.Timeout()) {
+			return nil, model.NewAppError("SSH_HANDSHAKE_TIMEOUT", "SSH 端口已连通，但握手等待超时，请检查网络和服务器状态", "ssh_auth", true).WithDetails(map[string]any{"reason": err.Error()})
+		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, model.NewAppError("SSH_AUTH_FAILED", "SSH 握手或身份认证失败", "ssh_auth", false)
+		return nil, model.NewAppError("SSH_AUTH_FAILED", "SSH 握手或身份认证失败", "ssh_auth", false).WithDetails(map[string]any{"reason": err.Error()})
 	}
 	_ = connection.SetDeadline(time.Time{})
 	connected = true
@@ -271,7 +275,7 @@ func (m *Manager) OpenTerminal(ctx context.Context, profileID string, cols, rows
 	defer cancelSetup()
 	sshSession, err := m.newSession(setupContext, profileID, client)
 	if err != nil {
-		return "", model.NewAppError("SSH_SESSION_FAILED", "创建 SSH 会话失败", "ssh_terminal", true)
+		return "", sessionFailure(setupContext, err, "创建 SSH 会话失败", "ssh_terminal")
 	}
 	stdin, err := sshSession.StdinPipe()
 	if err != nil {
@@ -293,7 +297,7 @@ func (m *Manager) OpenTerminal(ctx context.Context, profileID string, cols, rows
 		return sshSession.RequestPty("xterm-256color", rows, cols, modes)
 	}); err != nil {
 		sshSession.Close()
-		return "", model.NewAppError("SSH_SESSION_FAILED", "远程服务器拒绝 PTY 请求", "ssh_terminal", false)
+		return "", sessionFailure(setupContext, err, "远程服务器拒绝 PTY 请求", "ssh_terminal")
 	}
 	// Shell 启动也可能等待服务端响应，取消时必须能释放调用入口。
 	var trackedStdout io.Reader
@@ -305,7 +309,7 @@ func (m *Manager) OpenTerminal(ctx context.Context, profileID string, cols, rows
 	})
 	if err != nil {
 		sshSession.Close()
-		return "", model.NewAppError("SSH_SESSION_FAILED", "启动远程 Shell 失败", "ssh_terminal", true)
+		return "", sessionFailure(setupContext, err, "启动远程 Shell 失败", "ssh_terminal")
 	}
 	sessionID := owner + "-session-" + uuid.NewString()
 	entry := &terminalSession{
@@ -453,7 +457,7 @@ func (m *Manager) Exec(ctx context.Context, request model.ExecRequest) (model.Ex
 		if ctx.Err() != nil {
 			return model.ExecResult{}, commandTimeout()
 		}
-		return model.ExecResult{}, model.NewAppError("SSH_SESSION_FAILED", "创建命令会话失败", "ssh_exec", true)
+		return model.ExecResult{}, sessionFailure(ctx, err, "创建命令会话失败", "ssh_exec")
 	}
 	defer func() { go session.Close() }()
 	runtime.activeCommands.Add(1)
