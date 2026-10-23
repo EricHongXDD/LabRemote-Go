@@ -43,6 +43,7 @@ import TerminalView from './components/TerminalView'
 import TransferDialog from './components/TransferDialog'
 import type {TransferMode} from './components/TransferDialog'
 import {parseAppError} from './lib/errors'
+import {runWithTrustConfirmation as runWithTrust} from './lib/trust'
 import {createProfileCopyDraft, usesIsolatedTunnel} from './lib/profile'
 import type {ConnectionProfile, ConnectionTestResult, DownloadProgress, DownloadRequest, ImportConnectionsResult, RemoteDirectory, SaveProfileRequest, TerminalTab, TestConnectionRequest, UploadProgress, UploadRequest} from './types'
 
@@ -199,36 +200,15 @@ export default function App() {
     return await TestSSHConnection(generatedApp.TestConnectionRequest.createFrom(request)) as ConnectionTestResult
   }
 
-  const runWithTrustConfirmation = async <T,>(profile: ConnectionProfile, operation: () => Promise<T>): Promise<T> => {
-    try {
-      return await operation()
-    } catch (error) {
-      const value = parseAppError(error)
-      if (value.code === 'TUNNEL_CERT_UNKNOWN' && value.details?.fingerprint) {
-		  const accepted = await confirmAction({
-          title: '确认隔离隧道服务器证书',
-          message: `服务器：${String(value.details.address || profile.vpn.server_address)}\n指纹：${String(value.details.fingerprint)}\n\n请与管理员提供的指纹核对一致后再信任。`,
-          confirmLabel: '信任并继续',
-        })
-        if (accepted) {
-          await AcceptTunnelCertificate(profile.id, String(value.details.fingerprint))
-          await refreshProfiles()
-          return runWithTrustConfirmation(profile, operation)
-        }
-      }
-      if (value.code === 'SSH_HOST_KEY_UNKNOWN' && value.details?.fingerprint) {
-        const accepted = await confirmAction({
-          title: '确认 SSH 主机指纹',
-          message: `服务器：${String(value.details.address || profile.ssh.server_address)}\n类型：${String(value.details.key_type || '')}\n指纹：${String(value.details.fingerprint)}\n\n请与管理员提供的指纹核对一致后再信任。`,
-          confirmLabel: '信任并继续',
-        })
-        if (accepted) {
-          await AcceptHostKey(profile.id, String(value.details.fingerprint))
-          return runWithTrustConfirmation(profile, operation)
-        }
-      }
-      throw error
-    }
+  const runWithTrustConfirmation = <T,>(profile: ConnectionProfile, operation: () => Promise<T>): Promise<T> => {
+    return runWithTrust(profile, operation, {
+      confirm: confirmAction,
+      acceptHostKey: AcceptHostKey,
+      acceptTunnelCertificate: async (profileID, fingerprint) => {
+        await AcceptTunnelCertificate(profileID, fingerprint)
+        await refreshProfiles()
+      },
+    })
   }
 
   const connect = async (profile: ConnectionProfile) => {
