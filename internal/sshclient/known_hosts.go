@@ -55,10 +55,14 @@ func (k *KnownHosts) Callback(profileID string) ssh.HostKeyCallback {
 			})
 		}
 		if known.Fingerprint != fingerprint {
+			// 指纹变化仍阻断握手，仅保存本次观测值供图形界面人工核验。
+			k.pending[profileID] = record
 			return model.NewAppError("SSH_HOST_KEY_CHANGED", "SSH 主机指纹已变化，连接已阻断", "ssh_host_key", false).WithDetails(map[string]any{
 				"address": hostname, "key_type": key.Type(), "expected": known.Fingerprint, "actual": fingerprint,
 			})
 		}
+		// 已恢复为受信任密钥时，旧弹窗不得再确认过期的候选密钥。
+		delete(k.pending, profileID)
 		return nil
 	}
 }

@@ -503,7 +503,8 @@ MCP 工具不能读取、写入、缩放或关闭图形界面创建的终端。�
 | `MCP_PROFILE_FORBIDDEN` | Profile 未授权给 MCP，或 `profile_id` 不正确 | 编辑连接开启 MCP 可见权限，再通过 `profiles_list` 获取 ID |
 | `MCP_TOOL_FORBIDDEN` | 未授予命令、交互、文件上传、文件下载或断开权限；或存在图形终端时请求断开 | 调整最小必要权限，或由用户在图形界面处理活动终端 |
 | `TUNNEL_CERT_UNKNOWN` / `SSH_HOST_KEY_UNKNOWN` | 尚未在图形界面确认服务器指纹 | 先在图形界面连接并核对、确认指纹 |
-| `TUNNEL_CERT_CHANGED` / `SSH_HOST_KEY_CHANGED` | 已固定指纹发生变化 | 停止连接并联系管理员核实，不要绕过 |
+| `TUNNEL_CERT_CHANGED` | 已固定隧道证书指纹发生变化 | 停止连接并联系管理员核实，不要绕过 |
+| `SSH_HOST_KEY_CHANGED` | 已固定 SSH 主机指纹发生变化 | 停止重试，请用户联系管理员核对；用户可在图形界面连接时比较新旧指纹，确认无误后手动信任并重试，MCP 不得自动接受 |
 | `SSH_AUTH_FAILED` | 用户名、密码或服务器公钥授权不匹配 | 在连接编辑页核对认证方式并更新 SSH 凭据 |
 | `SSH_PRIVATE_KEY_NOT_FOUND` | 私钥文件路径失效或文件不可读 | 在连接编辑页重新选择私钥文件 |
 | `SSH_KEY_PASSPHRASE_REQUIRED` / `SSH_KEY_PASSPHRASE_INVALID` | 私钥口令缺失或错误 | 在连接编辑页更新私钥口令 |
