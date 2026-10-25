@@ -113,6 +113,12 @@ func (m *Manager) probeClient(ctx context.Context, profileID string, client *ssh
 	})
 }
 
+func (m *Manager) checkClientAfterSessionFailure(profileID string, client *ssh.Client) {
+	if err := m.probeClient(context.Background(), profileID, client); err != nil {
+		m.invalidateClientIf(profileID, client)
+	}
+}
+
 func (m *Manager) keepClientAlive(profileID string, client *ssh.Client) {
 	done := make(chan struct{})
 	go func() { _ = client.Wait(); close(done) }()

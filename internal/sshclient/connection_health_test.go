@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -99,6 +101,13 @@ func healthTestManager(t *testing.T, mode string) (*Manager, string, <-chan stru
 								continue
 							}
 							_ = request.Reply(true, nil)
+							if (mode == "terminal-missing-exit" || mode == "terminal-normal-exit") && request.Type == "exec" {
+								_, _ = io.WriteString(channel, "\x1eLABREMOTE_PID=123\x1f测试终端输出")
+								if mode == "terminal-normal-exit" {
+									_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+								}
+								return
+							}
 							if mode == "sftp-healthy" && request.Type == "subsystem" {
 								go func() {
 									// 大量错误输出不能堵住 SFTP 的正常响应。
@@ -394,5 +403,92 @@ func TestHandshakeTimeoutDoesNotReportCredentialFailure(t *testing.T) {
 	var appError *model.AppError
 	if !errors.As(err, &appError) || appError.Code != "SSH_HANDSHAKE_TIMEOUT" || !appError.Retryable || appError.Details["reason"] == "" {
 		t.Fatalf("无响应的握手不应归因于密码错误: %v", err)
+	}
+}
+
+// failedProbeConn 模拟客户端尚未收到关闭通知，但保活已经失败的缓存连接。
+type failedProbeConn struct {
+	ssh.Conn
+	probes atomic.Int32
+}
+
+func (c *failedProbeConn) SendRequest(string, bool, []byte) (bool, []byte, error) {
+	c.probes.Add(1)
+	return false, nil, io.EOF
+}
+
+func TestConnectReplacesUnresponsiveCachedClient(t *testing.T) {
+	manager, id, _ := healthTestManager(t, "wait")
+	if err := manager.Connect(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	runtime := manager.runtime(id)
+	runtime.mu.Lock()
+	old := runtime.client
+	failed := &failedProbeConn{Conn: old.Conn}
+	stale := &ssh.Client{Conn: failed}
+	runtime.client = stale
+	runtime.mu.Unlock()
+	if err := manager.Connect(context.Background(), id); err != nil {
+		t.Fatalf("重连未恢复失效缓存: %v", err)
+	}
+	runtime.mu.Lock()
+	replacement := runtime.client
+	runtime.mu.Unlock()
+	if failed.probes.Load() != 1 || replacement == stale || replacement == nil {
+		t.Fatal("重连没有探测并替换旧连接")
+	}
+	if err := manager.ProbeTerminal(context.Background(), id); err != nil {
+		t.Fatalf("新连接无法创建真实终端通道: %v", err)
+	}
+	// 旧会话延迟返回失败时不得关闭刚建立的新连接。
+	manager.checkClientAfterSessionFailure(id, stale)
+	if err := manager.probeClient(context.Background(), id, replacement); err != nil || !manager.IsConnected(id) {
+		t.Fatalf("旧会话清理破坏了新连接: %v", err)
+	}
+}
+
+func TestTerminalMissingExitStatusPreservesHealthyTransport(t *testing.T) {
+	for _, mode := range []string{"terminal-missing-exit", "terminal-normal-exit"} {
+		t.Run(mode, func(t *testing.T) {
+			manager, id, _ := healthTestManager(t, mode)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			for attempt := 0; attempt < 2; attempt++ {
+				sessionID, err := manager.OpenTerminal(ctx, id, 80, 24, "ui")
+				if err != nil {
+					t.Fatalf("第 %d 次打开终端失败: %v", attempt+1, err)
+				}
+				session, err := manager.getSession(sessionID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for {
+					_, _, open, _, reason := session.buffer.Read(ctx, 0, 4096, 10*time.Millisecond)
+					if !open {
+						if mode == "terminal-missing-exit" && (!strings.Contains(reason, "服务器未返回退出状态") || strings.Contains(reason, "wait:")) {
+							t.Fatalf("缺少退出状态的提示不正确: %s", reason)
+						}
+						if mode == "terminal-normal-exit" && reason != "" {
+							t.Fatalf("正常退出不应报告网络故障: %s", reason)
+						}
+						break
+					}
+					select {
+					case <-ctx.Done():
+						t.Fatal("终端关闭未被检测")
+					case <-time.After(time.Millisecond):
+					}
+				}
+				manager.checkClientAfterSessionFailure(id, session.client)
+				runtime := manager.runtime(id)
+				runtime.mu.Lock()
+				current := runtime.client
+				runtime.mu.Unlock()
+				if current != session.client {
+					t.Fatal("终端退出不应清理仍可响应的共享连接")
+				}
+			}
+		})
 	}
 }
