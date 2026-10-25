@@ -122,7 +122,7 @@ func Open(ctx context.Context, config Config) (*Session, error) {
 		frames: make(chan []byte, 256), outbound: make(chan []byte, 256), done: make(chan struct{}),
 	}
 	keep = true
-	go session.readLoop()
+	go session.readLoop(60 * time.Second)
 	go session.writeLoop()
 	return session, nil
 }
@@ -450,8 +450,13 @@ func (session *Session) Close() error {
 	return nil
 }
 
-func (session *Session) readLoop() {
+func (session *Session) readLoop(idle time.Duration) {
 	for {
+		// 服务端即使没有业务流量也会发送保活；静默断网不能永久保留旧隧道。
+		if err := session.raw.SetReadDeadline(time.Now().Add(idle)); err != nil {
+			session.stop(err)
+			return
+		}
 		var count uint32
 		if err := binary.Read(session.reader, binary.BigEndian, &count); err != nil {
 			session.stop(err)
@@ -507,11 +512,19 @@ func (session *Session) writeLoop() {
 	for {
 		select {
 		case frame := <-session.outbound:
+			if err := session.raw.SetWriteDeadline(time.Now().Add(15 * time.Second)); err != nil {
+				session.stop(err)
+				return
+			}
 			if err := writeFrameBatch(session.secure, frame); err != nil {
 				session.stop(err)
 				return
 			}
 		case <-ticker.C:
+			if err := session.raw.SetWriteDeadline(time.Now().Add(15 * time.Second)); err != nil {
+				session.stop(err)
+				return
+			}
 			if err := writeKeepAlive(session.secure); err != nil {
 				session.stop(err)
 				return

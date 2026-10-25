@@ -68,7 +68,7 @@ npm.cmd run build
 - `LabRemote-macos-universal.zip`：同时支持 Apple Silicon 与 Intel 的 macOS `.app`；凭据保存到 Keychain；
 - `SHA256SUMS.txt`：全部发行文件的 SHA-256 校验值。
 
-推送符合 `v*` 格式的标签会自动构建三个平台并把产物上传到对应 GitHub Release。手动运行发行工作流时填写版本标签也会自动创建或更新 Release；只有显式关闭“发布到 Releases”时才仅保留 Actions Artifact。标签版本必须与 `wails.json` 中的 `info.productVersion` 一致，例如 `v1.5.8`。
+推送符合 `v*` 格式的标签会自动构建三个平台并把产物上传到对应 GitHub Release。手动运行发行工作流时填写版本标签也会自动创建或更新 Release；只有显式关闭“发布到 Releases”时才仅保留 Actions Artifact。标签版本必须与 `wails.json` 中的 `info.productVersion` 一致，例如 `v1.5.9`。
 
 SSH 每 15 秒发送一次需要回复的心跳，10 秒无响应时淘汰失效连接，下一次操作重新建立连接。`ssh_exec` 的 30 秒默认超时（最多 300 秒）覆盖连接、创建会话、启动和等待退出全过程；连接和创建会话期间状态查询仍可返回。命令不会自动重放，避免重复执行实验。若传输失败，请保留原 `job_id` 和分片，先恢复连接，再用 `resume=true` 续传尚未完成的文件；已完成文件默认不会被覆盖。
 

@@ -102,12 +102,25 @@ func (m *Manager) Connect(ctx context.Context, profileID string) error {
 		return ctx.Err()
 	}
 	runtime.mu.Lock()
-	if runtime.client != nil {
-		runtime.mu.Unlock()
-		return nil
-	}
+	cached := runtime.client
 	generation := runtime.generation
 	runtime.mu.Unlock()
+	if cached != nil {
+		// 缓存非空不能证明链路可用，重连前必须等待远端实际回复。
+		if err := m.probeClient(ctx, profileID, cached); err == nil {
+			runtime.mu.Lock()
+			current := runtime.client == cached && runtime.generation == generation
+			runtime.mu.Unlock()
+			if current {
+				return nil
+			}
+		} else {
+			m.invalidateClientIf(profileID, cached)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	client, err := m.dialSSH(ctx, profileID)
 	if err != nil {
 		return err
@@ -348,13 +361,21 @@ func (m *Manager) readTerminal(session *terminalSession, reader io.Reader) {
 
 func (m *Manager) waitTerminal(session *terminalSession) {
 	err := session.session.Wait()
+	wasClosed := session.closed.Swap(true)
 	errText := ""
 	if err != nil && !errors.Is(err, io.EOF) {
 		errText = err.Error()
+		var missingExit *ssh.ExitMissingError
+		if errors.As(err, &missingExit) {
+			errText = "远程终端已结束，但服务器未返回退出状态；可能是网络中断、服务器重启或 Shell 被终止，请重新连接"
+		}
 	}
 	session.buffer.Close(errText)
-	session.closed.Store(true)
 	m.events.Emit("terminal:closed", map[string]any{"session_id": session.id, "reason": errText})
+	if err != nil && !wasClosed {
+		// 缺少退出状态不一定是传输故障；仅在探测失败时清理该会话使用的旧连接。
+		go m.checkClientAfterSessionFailure(session.profileID, session.client)
+	}
 	// 保留已关闭会话的有界缓冲区一小段时间，让 MCP 客户端读取最后输出和退出状态。
 	time.AfterFunc(5*time.Minute, func() {
 		m.mu.Lock()

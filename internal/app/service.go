@@ -598,9 +598,7 @@ func (s *Service) EnsureConnected(ctx context.Context, profileID string) error {
 }
 
 func (s *Service) ConnectAndOpenTerminal(ctx context.Context, profileID string, cols, rows int) (string, error) {
-	if err := s.EnsureConnected(ctx, profileID); err != nil {
-		return "", err
-	}
+	// OpenTerminal 统一完成连接与健康探测，避免同一次打开重复等待保活回复。
 	return s.ssh.OpenTerminal(ctx, profileID, cols, rows, "ui")
 }
 
@@ -889,9 +887,6 @@ func (s *Service) MCPOpenSession(ctx context.Context, profileID string, cols, ro
 		return "", err
 	}
 	if err := policy.RequireInteractive(value); err != nil {
-		return "", err
-	}
-	if err := s.EnsureConnected(ctx, profileID); err != nil {
 		return "", err
 	}
 	return s.ssh.OpenTerminal(ctx, profileID, cols, rows, "mcp")
