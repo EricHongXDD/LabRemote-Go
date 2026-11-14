@@ -9,18 +9,24 @@ import (
 	"sync"
 	"time"
 
+	"github.com/EricHongXDD/LabRemote-Go/internal/atrust"
 	"github.com/EricHongXDD/LabRemote-Go/internal/events"
 	"github.com/EricHongXDD/LabRemote-Go/internal/model"
+	"github.com/EricHongXDD/LabRemote-Go/internal/openvpn"
 	"github.com/EricHongXDD/LabRemote-Go/internal/profile"
 	"github.com/EricHongXDD/LabRemote-Go/internal/secrets"
 	"github.com/EricHongXDD/LabRemote-Go/internal/softether"
 )
 
 type isolatedRuntime struct {
-	mu          sync.Mutex
-	connectGate chan struct{}
-	generation  uint64
-	link        *softether.Link
+	mu            sync.Mutex
+	connectGate   chan struct{}
+	generation    uint64
+	link          *softether.Link
+	openVPN       *openvpn.Session
+	openVPNCancel context.CancelFunc
+	aTrust        *atrust.Session
+	aTrustCancel  context.CancelFunc
 }
 
 type IsolatedManager struct {
@@ -30,12 +36,14 @@ type IsolatedManager struct {
 	mu         sync.Mutex
 	runtimes   map[string]*isolatedRuntime
 	pending    map[string]string
+	otp        *openvpn.OTPBroker
+	aTrustAuth *atrust.AuthBroker
 }
 
 func NewIsolatedManager(repository profile.Repository, secretStore secrets.Store, sink events.Sink) *IsolatedManager {
 	return &IsolatedManager{
 		repository: repository, secrets: secretStore, states: NewStateMachine(sink),
-		runtimes: make(map[string]*isolatedRuntime), pending: make(map[string]string),
+		runtimes: make(map[string]*isolatedRuntime), pending: make(map[string]string), otp: openvpn.NewOTPBroker(sink), aTrustAuth: atrust.NewAuthBroker(sink),
 	}
 }
 
@@ -57,6 +65,13 @@ func (m *IsolatedManager) EnsureProfile(_ context.Context, value model.Connectio
 func (m *IsolatedManager) Connect(ctx context.Context, profileID string) (model.VPNStatus, error) {
 	if err := ctx.Err(); err != nil {
 		return model.VPNStatus{}, err
+	}
+	valueForMode, modeErr := m.repository.Get(ctx, profileID)
+	if modeErr == nil && valueForMode.EffectiveConnectionMode() == model.ConnectionModeATrustSSH {
+		return m.connectATrust(ctx, valueForMode)
+	}
+	if modeErr == nil && valueForMode.EffectiveConnectionMode() == model.ConnectionModeOpenVPNSSH {
+		return m.connectOpenVPN(ctx, valueForMode)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
@@ -187,6 +202,12 @@ func (m *IsolatedManager) DialContext(ctx context.Context, profileID, network, a
 		}
 		return connection, nil
 	}
+	if value.EffectiveConnectionMode() == model.ConnectionModeOpenVPNSSH {
+		return m.dialOpenVPN(ctx, value, network, address)
+	}
+	if value.EffectiveConnectionMode() == model.ConnectionModeATrustSSH {
+		return m.dialATrust(ctx, value, network, address)
+	}
 	runtime := m.runtime(profileID)
 	runtime.mu.Lock()
 	link := runtime.link
@@ -209,9 +230,25 @@ func (m *IsolatedManager) Disconnect(ctx context.Context, profileID string, _ bo
 	runtime := m.runtime(profileID)
 	runtime.mu.Lock()
 	link := runtime.link
+	aTrustSession, cancelATrust := runtime.aTrust, runtime.aTrustCancel
+	runtime.aTrust, runtime.aTrustCancel = nil, nil
+	external, cancelExternal := runtime.openVPN, runtime.openVPNCancel
+	runtime.openVPN, runtime.openVPNCancel = nil, nil
 	runtime.link = nil
 	runtime.generation++
 	runtime.mu.Unlock()
+	if cancelExternal != nil {
+		cancelExternal()
+	}
+	if cancelATrust != nil {
+		cancelATrust()
+	}
+	if aTrustSession != nil {
+		_ = aTrustSession.Close()
+	}
+	if external != nil {
+		_ = external.Close()
+	}
 	if !value.UsesIsolatedTunnel() {
 		if link != nil {
 			_ = link.Close()
@@ -225,12 +262,18 @@ func (m *IsolatedManager) Disconnect(ctx context.Context, profileID string, _ bo
 		})
 		return nil
 	}
-	if link == nil {
-		m.states.Set(profileID, model.VPNDisconnected, "")
+	if link == nil && external == nil {
+		m.states.Update(profileID, func(status *model.VPNStatus) {
+			status.State = model.VPNDisconnected
+			status.RouteReady = false
+			status.ErrorCode = ""
+		})
 		return nil
 	}
 	m.states.Set(profileID, model.VPNDisconnecting, "")
-	_ = link.Close()
+	if link != nil {
+		_ = link.Close()
+	}
 	m.states.Update(profileID, func(status *model.VPNStatus) {
 		status.State = model.VPNDisconnected
 		status.ErrorCode = ""
@@ -324,3 +367,5 @@ func (m *IsolatedManager) connectionError(profileID string, err error) error {
 }
 
 var _ Transport = (*IsolatedManager)(nil)
+
+func (m *IsolatedManager) EventSink() events.Sink { return m.states.events }

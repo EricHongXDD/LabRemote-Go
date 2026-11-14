@@ -1,10 +1,16 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
 import {
+  ImportOpenVPNConfig,
+  OpenATrustAuthWindow,
+  CancelATrustLogin,
+  SubmitOpenVPNOTP,
   AcceptHostKey,
   AcceptTunnelCertificate,
+  AcceptConnectionTestCertificate,
   ClearSavedCredential,
 	CloseBrowserAccess,
   CloseTerminal,
+  CloseConnectionTestSession,
   ConnectAndOpenTerminal,
   ConnectionStatus,
   CopyText,
@@ -34,6 +40,10 @@ import {
 import {EventsOn} from '../wailsjs/runtime/runtime'
 import {app as generatedApp} from '../wailsjs/go/models'
 import ProfileDialog from './components/ProfileDialog'
+import ATrustLoginDialog from './components/ATrustLoginDialog'
+import type {ATrustChallenge} from './components/ATrustLoginDialog'
+import OpenVPNOTPDialog from './components/OpenVPNOTPDialog'
+import type {OTPChallenge} from './components/OpenVPNOTPDialog'
 import BrowserDialog from './components/BrowserDialog'
 import ConfirmDialog from './components/ConfirmDialog'
 import type {ConfirmOptions} from './components/ConfirmDialog'
@@ -44,7 +54,7 @@ import TransferDialog from './components/TransferDialog'
 import type {TransferMode} from './components/TransferDialog'
 import {parseAppError} from './lib/errors'
 import {runWithTrustConfirmation as runWithTrust} from './lib/trust'
-import {createProfileCopyDraft, usesIsolatedTunnel} from './lib/profile'
+import {createProfileCopyDraft, usesIsolatedTunnel, connectionModeLabel, connectionModeBadge} from './lib/profile'
 import type {ConnectionProfile, ConnectionTestResult, DownloadProgress, DownloadRequest, ImportConnectionsResult, RemoteDirectory, SaveProfileRequest, TerminalTab, TestConnectionRequest, UploadProgress, UploadRequest} from './types'
 
 type MCPState = {enabled: boolean; address: string; port: number}
@@ -82,6 +92,8 @@ export default function App() {
   const [connectionMenu, setConnectionMenu] = useState<ConnectionMenu | null>(null)
   const [browserProfile, setBrowserProfile] = useState<ConnectionProfile | null>(null)
 	const [bundleDialog, setBundleDialog] = useState<{mode: ConnectionBundleMode; selectedIDs?: string[]} | null>(null)
+  const [aTrustChallenges, setATrustChallenges] = useState<ATrustChallenge[]>([])
+  const [otpChallenges, setOTPChallenges] = useState<OTPChallenge[]>([])
   const [confirmation, setConfirmation] = useState<ConfirmOptions | null>(null)
   const confirmationResolver = useRef<((accepted: boolean) => void) | null>(null)
 
@@ -100,6 +112,7 @@ export default function App() {
 
   const selected = profiles.find(value => value.id === selectedID) || null
   const selectedUsesTunnel = selected ? usesIsolatedTunnel(selected) : true
+  const selectedIsATrust = selected?.connection_mode === 'atrust_ssh'
   const vpnState = status.vpn?.state || 'disconnected'
   const vpnStateLabel = vpnStateLabels[vpnState] || vpnState
   const activeTasks = (status.active_transfers || 0) + (status.browser_sessions || 0)
@@ -139,8 +152,12 @@ export default function App() {
     const cancelClosed = EventsOn('terminal:closed', (event: {session_id: string; reason: string}) => {
       setTabs(current => current.map(tab => tab.id === event.session_id ? {...tab, closed: true, reason: event.reason} : tab))
     })
+    const cancelATrust = EventsOn('atrust:login', (challenge: ATrustChallenge) => setATrustChallenges(current => [...current.filter(item => item.id !== challenge.id), challenge]))
+    const cancelATrustClosed = EventsOn('atrust:login-closed', (event: {id:string}) => setATrustChallenges(current => current.filter(item => item.id !== event.id)))
+    const cancelOTP = EventsOn('openvpn:otp', (challenge: OTPChallenge) => setOTPChallenges(current => [...current.filter(item => item.id !== challenge.id), challenge]))
+    const cancelOTPClosed = EventsOn('openvpn:otp-closed', (event: {id: string}) => setOTPChallenges(current => current.filter(item => item.id !== event.id)))
     const cancelMCP = EventsOn('mcp:status', (value: MCPState) => setMCP(value))
-    return () => { cancelClosed(); cancelMCP() }
+    return () => { cancelClosed(); cancelMCP(); cancelOTP(); cancelOTPClosed(); cancelATrust(); cancelATrustClosed() }
   }, [])
 
   useEffect(() => {
@@ -197,14 +214,15 @@ export default function App() {
   }
 
   const testSSH = async (request: TestConnectionRequest): Promise<ConnectionTestResult> => {
-    return await TestSSHConnection(generatedApp.TestConnectionRequest.createFrom(request)) as ConnectionTestResult
+    return await runWithTrustConfirmation(request.profile, () => TestSSHConnection(generatedApp.TestConnectionRequest.createFrom(request)) as Promise<ConnectionTestResult>, request.test_session_id)
   }
 
-  const runWithTrustConfirmation = <T,>(profile: ConnectionProfile, operation: () => Promise<T>): Promise<T> => {
+  const runWithTrustConfirmation = <T,>(profile: ConnectionProfile, operation: () => Promise<T>, testSessionID?: string): Promise<T> => {
     return runWithTrust(profile, operation, {
       confirm: confirmAction,
       acceptHostKey: AcceptHostKey,
       acceptTunnelCertificate: async (profileID, fingerprint) => {
+        if (testSessionID) { await AcceptConnectionTestCertificate(testSessionID, fingerprint); return }
         await AcceptTunnelCertificate(profileID, fingerprint)
         await refreshProfiles()
       },
@@ -483,7 +501,7 @@ export default function App() {
                   <button key={profile.id} title="双击连接，右键查看更多操作" className={`profile-row ${selectedID === profile.id ? 'selected' : ''}`} onClick={() => setSelectedID(profile.id)} onDoubleClick={() => void connect(profile)} onContextMenu={event => showConnectionMenu(event, profile)}>
                     <span className={`server-icon ${selectedID === profile.id && (usesIsolatedTunnel(profile) ? vpnState === 'connected' : Boolean(status.ssh_connected)) ? 'online' : ''}`}>›_</span>
                     <span><strong>{profile.display_name}</strong><small>{profile.ssh.server_address}:{profile.ssh.port}</small></span>
-                    <span className="profile-badges"><b className="connection-mode-badge" title={usesIsolatedTunnel(profile) ? '隔离隧道 + SSH' : '仅 SSH 直接连接'}>{usesIsolatedTunnel(profile) ? '隧道' : 'SSH'}</b>{profile.mcp_policy.enabled_for_profile && <b className="mcp-badge" title="已允许 MCP 访问">MCP</b>}</span>
+                    <span className="profile-badges"><b className="connection-mode-badge" title={connectionModeLabel(profile)}>{connectionModeBadge(profile)}</b>{profile.mcp_policy.enabled_for_profile && <b className="mcp-badge" title="已允许 MCP 访问">MCP</b>}</span>
                   </button>
                 ))}
               </div>
@@ -533,7 +551,7 @@ export default function App() {
                 <span className="empty-eyebrow">SECURE REMOTE ACCESS</span>
                 <div className="prompt-glyph">&gt;_</div>
                 <h1>{selected ? `连接到 ${selected.display_name}` : '开始使用 LabRemote'}</h1>
-                <p>{selected ? (selectedUsesTunnel ? '建立进程内隔离隧道，并通过已验证的 SSH 主机打开终端。不会创建系统 VPN、网卡或路由。' : '直接连接已验证的 SSH 主机。网页访问将继续通过 SSH 转发到远端主机可访问的端口。') : '请先在左侧新建连接。配置和凭据将分别安全保存。'}</p>
+                <p>{selected ? (selectedIsATrust ? '在独立网页窗口完成 aTrust 认证，仅为此 SSH 目标建立进程内 TCP 通道。网页资源与文件传输均通过该 SSH 连接访问。' : selected.connection_mode === 'openvpn_ssh' ? '建立进程内 OpenVPN 隔离隧道，按提示输入验证码，再通过 SSH 打开终端。不创建系统网卡或路由。' : selectedUsesTunnel ? '建立进程内隔离隧道，并通过已验证的 SSH 主机打开终端。不会创建系统 VPN、网卡或路由。' : '直接连接已验证的 SSH 主机。网页访问将继续通过 SSH 转发到远端主机可访问的端口。') : '请先在左侧新建连接。配置和凭据将分别安全保存。'}</p>
                 <div className="empty-actions">
                   {selected ? <>
                     <button className="button primary" onClick={() => connect(selected)}>连接并打开终端</button>
@@ -552,7 +570,7 @@ export default function App() {
       </section>
 
       <footer className="statusbar">
-        <span title={selectedUsesTunnel ? '用户态隔离隧道状态' : '该配置直接连接 SSH，不建立隔离隧道'}><b className={`mini-dot ${selectedUsesTunnel ? (vpnState === 'connected' ? 'online' : '') : (status.ssh_connected ? 'online' : '')}`} />{selectedUsesTunnel ? `隧道 ${vpnStateLabel}` : '方式 仅 SSH'}</span>
+        <span title={selectedIsATrust ? 'aTrust 进程内目标 TCP 通道状态' : selected?.connection_mode === 'openvpn_ssh' ? 'OpenVPN 进程内隔离隧道状态' : selectedUsesTunnel ? '用户态隔离隧道状态' : '该配置直接连接 SSH，不建立隔离隧道'}><b className={`mini-dot ${selectedUsesTunnel ? (vpnState === 'connected' ? 'online' : '') : (status.ssh_connected ? 'online' : '')}`} />{selectedIsATrust ? `aTrust ${vpnStateLabel}` : selectedUsesTunnel ? `隧道 ${vpnStateLabel}` : '方式 仅 SSH'}</span>
         <span title="SSH 控制连接状态"><b className={`mini-dot ${status.ssh_connected ? 'online' : ''}`} />SSH {status.ssh_connected ? '已连接' : '未连接'}</span>
         <span>会话 {(status.ui_sessions || 0) + (status.mcp_sessions || 0)}</span>
         <span>活动任务 {activeTasks}</span>
@@ -560,7 +578,8 @@ export default function App() {
         <span className={`mcp-status ${mcp.enabled ? 'enabled' : ''}`}>MCP {mcp.enabled ? `127.0.0.1:${mcp.port}` : '已关闭'}</span>
       </footer>
 
-      {dialogOpen && <ProfileDialog value={editing} copySourceProfileID={copySourceProfileID} onCancel={closeProfileDialog} onSave={save} onTestTunnel={testTunnel} onTestSSH={testSSH} onSelectSSHPrivateKey={SelectSSHPrivateKey} onClearSecret={clearSecret} />}
+      {aTrustChallenges[0] && <ATrustLoginDialog key={aTrustChallenges[0].id} challenge={aTrustChallenges[0]} onOpen={OpenATrustAuthWindow} onCancel={CancelATrustLogin} />}
+      {dialogOpen && <ProfileDialog value={editing} copySourceProfileID={copySourceProfileID} onCancel={closeProfileDialog} onSave={save} onTestTunnel={testTunnel} onTestSSH={testSSH} onCloseTestSession={CloseConnectionTestSession} onImportOpenVPNConfig={ImportOpenVPNConfig} onSelectSSHPrivateKey={SelectSSHPrivateKey} onClearSecret={clearSecret} />}
 		{bundleDialog && <ConnectionBundleDialog
 			profiles={profiles}
 			initialMode={bundleDialog.mode}
@@ -598,6 +617,7 @@ export default function App() {
           <button className="danger" onClick={() => { const profile = connectionMenu.profile; setConnectionMenu(null); void deleteProfile(profile) }}>删除连接</button>
         </nav>
       </div>}
+      {otpChallenges[0] && <OpenVPNOTPDialog key={otpChallenges[0].id} challenge={otpChallenges[0]} onSubmit={SubmitOpenVPNOTP} />}
       {confirmation && <ConfirmDialog options={confirmation} onResolve={resolveConfirmation} />}
     </main>
   )

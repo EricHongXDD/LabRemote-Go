@@ -91,7 +91,7 @@ func (m *Manager) Connect(ctx context.Context, profileID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, m.connectionSetupTimeout(ctx, profileID))
 	defer cancel()
 	runtime := m.runtime(profileID)
 	// 连接串行化使用可取消的入口，状态锁只保护内存，不能覆盖网络等待。
@@ -187,6 +187,11 @@ func (m *Manager) dialSSH(ctx context.Context, profileID string) (*ssh.Client, e
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
+		}
+		// TCP 已建立但 SSH 握手期间 EOF/重置，不能误报为账号或密码错误。
+		var operationError *net.OpError
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) || errors.As(err, &operationError) {
+			return nil, model.NewAppError("SSH_PEER_CLOSED", "TCP 已连接，但对端或网关在 SSH 握手期间关闭了连接；请检查 SSH 服务日志、连接限制及访问规则", "ssh_handshake", true).WithDetails(map[string]any{"address": address, "reason": err.Error()})
 		}
 		return nil, model.NewAppError("SSH_AUTH_FAILED", "SSH 握手或身份认证失败", "ssh_auth", false).WithDetails(map[string]any{"reason": err.Error()})
 	}

@@ -1,0 +1,141 @@
+# capability matrix over the generated fixtures — go-openvpn
+#
+# Aggregate of caps.Inspect over the fixtures in caps/fixtures_test.go, which
+# instantiate every registry row. A change here is a change in how a directive
+# is graded.
+#
+# Regenerate after a deliberate registry change:
+#   go test ./caps -run TestRegistryMatrix -update
+#
+# Table columns are gap counts by severity. "configs" is how many profiles the
+# row was seen in at all.
+
+fixtures
+  groups                                9
+  configs                              47
+  refused                               1
+  directive lines                     317
+  inline blocks                        55
+  gaps                                374
+  implied gaps                          2
+  configs with implied gaps             2
+  unrecognised directives               0
+  unrecognised blocks                   0
+
+severity totals
+  supported                           312
+  ignored                              43
+  degraded                             15
+  fatal                                 4
+
+configs by worst severity
+  supported                            28
+  ignored                               7
+  degraded                              8
+  fatal                                 4
+
+per group
+  group                           configs       gaps  supported    ignored   degraded      fatal
+  compression                           8         50         48          1          1          0
+  crypto                                6         43         37          1          5          0
+  lexical                               3         24         24          0          0          0
+  misc                                  5         67         32         27          7          1
+  provider                              1         24         15          8          0          1
+  session                               5         45         40          4          1          0
+  transport                             7         47         46          0          1          0
+  trust                                 5         30         29          1          0          0
+  wrap                                  7         44         41          1          0          2
+
+per directive
+  directive                       configs       gaps  supported    ignored   degraded      fatal
+  <ca>                                 44         44         44          0          0          0
+  <cert>                                2          2          2          0          0          0
+  <key>                                 2          2          2          0          0          0
+  <tls-auth>                            5          5          5          0          0          0
+  <tls-crypt>                           2          2          2          0          0          0
+  allow-compression                     2          2          2          0          0          0
+  allow-recursive-routing               1          1          0          1          0          0
+  auth                                  4          4          4          0          0          0
+  auth-federate                         1          1          1          0          0          0
+  auth-nocache                          1          1          0          1          0          0
+  auth-retry                            1          1          0          1          0          0
+  auth-user-pass                       45         45         45          0          0          0
+  become-primary                        1          1          1          0          0          0
+  block-outside-dns                     1          1          0          1          0          0
+  ca                                    4          4          3          1          0          0
+  cert                                  1          1          1          0          0          0
+  cipher                                7          7          6          0          0          1
+  client                               47         47         47          0          0          0
+  comp-lzo                              6          6          6          0          0          0
+  comp-noadapt                          1          1          0          1          0          0
+  compress                              3          3          2          0          1          0
+  connect-retry-max                     1          1          0          1          0          0
+  connect-timeout                       1          1          0          0          1          0
+  data-ciphers                          1          1          0          0          1          0
+  data-ciphers-fallback                 1          1          0          0          1          0
+  dev                                  47         47         47          0          0          0
+  dhcp-option                           1          1          1          0          0          0
+  down                                  1          1          0          0          1          0
+  explicit-exit-notify                  2          2          2          0          0          0
+  fast-io                               2          2          0          2          0          0
+  float                                 1          1          0          0          1          0
+  fragment                              3          3          0          2          0          1
+  group                                 1          1          0          1          0          0
+  hand-window                           1          1          1          0          0          0
+  keepalive                             2          2          2          0          0          0
+  key                                   1          1          1          0          0          0
+  key-direction                         4          4          3          1          0          0
+  keysize                               1          1          0          0          1          0
+  link-mtu                              1          1          0          0          1          0
+  max-routes                            1          1          0          1          0          0
+  mssfix                                3          3          3          0          0          0
+  mute                                  1          1          0          1          0          0
+  mute-replay-warnings                  2          2          0          2          0          0
+  ncp-disable                           1          1          0          0          1          0
+  nobind                                2          2          0          2          0          0
+  ns-cert-type                          1          1          1          0          0          0
+  persist-key                           1          1          0          1          0          0
+  persist-remote-ip                     1          1          0          1          0          0
+  persist-tun                           1          1          0          1          0          0
+  ping                                  2          2          2          0          0          0
+  ping-exit                             1          1          0          0          1          0
+  ping-restart                          2          2          2          0          0          0
+  ping-timer-rem                        1          1          0          1          0          0
+  port                                  1          1          1          0          0          0
+  proto                                 3          3          3          0          0          0
+  pull                                  1          1          1          0          0          0
+  push-peer-info                        1          1          0          0          1          0
+  rcvbuf                                2          2          0          2          0          0
+  redirect-gateway                      1          1          0          0          1          0
+  remap-usr1                            1          1          0          1          0          0
+  remote                               47         52         52          0          0          0
+  remote-cert-tls                       2          2          2          0          0          0
+  remote-random                         3          3          3          0          0          0
+  remote-random-hostname                1          1          1          0          0          0
+  reneg-bytes                           1          1          1          0          0          0
+  reneg-sec                             1          1          1          0          0          0
+  resolv-retry                          2          2          0          2          0          0
+  route                                 1          1          0          0          1          0
+  route-delay                           2          2          0          2          0          0
+  route-method                          1          1          0          1          0          0
+  route-metric                          1          1          0          1          0          0
+  script-security                       1          1          0          1          0          0
+  setenv                                1          1          0          1          0          0
+  sndbuf                                2          2          0          2          0          0
+  tls-auth                              1          1          0          0          0          1
+  tls-cipher                            1          1          0          0          1          0
+  tls-client                            1          1          1          0          0          0
+  tls-crypt-v2                          1          1          0          0          0          1
+  tls-version-min                       1          1          0          1          0          0
+  tran-window                           1          1          0          1          0          0
+  tun-ipv6                              1          1          0          1          0          0
+  tun-mtu                               2          2          2          0          0          0
+  tun-mtu-extra                         1          1          0          1          0          0
+  tun-mtu-max                           1          1          0          1          0          0
+  up                                    1          1          0          0          1          0
+  up-restart                            1          1          0          1          0          0
+  user                                  1          1          0          1          0          0
+  verb                                  3          3          3          0          0          0
+  verify-x509-name                      1          1          1          0          0          0
+  x-go-openvpn-flow                     1          1          1          0          0          0
+  x-openlawsvpn-flow                    1          1          1          0          0          0

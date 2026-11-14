@@ -83,6 +83,7 @@ export namespace app {
 		}
 	}
 	export class TestConnectionRequest {
+	    test_session_id?: string;
 	    profile: model.ConnectionProfile;
 	    vpn_password: string;
 	    ssh_password: string;
@@ -95,6 +96,7 @@ export namespace app {
 
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.test_session_id = source["test_session_id"];
 	        this.profile = this.convertValues(source["profile"], model.ConnectionProfile);
 	        this.vpn_password = source["vpn_password"];
 	        this.ssh_password = source["ssh_password"];
@@ -191,6 +193,7 @@ export namespace model {
 	    }
 	}
 	export class VPNConfig {
+	    openvpn_config?: string;
 	    connection_name: string;
 	    server_address: string;
 	    server_port?: number;
@@ -207,6 +210,7 @@ export namespace model {
 
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.openvpn_config = source["openvpn_config"];
 	        this.connection_name = source["connection_name"];
 	        this.server_address = source["server_address"];
 	        this.server_port = source["server_port"];

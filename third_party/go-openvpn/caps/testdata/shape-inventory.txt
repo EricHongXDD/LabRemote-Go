@@ -1,0 +1,210 @@
+# shapes the fixtures exercise — go-openvpn
+#
+# Written from caps/fixtures_test.go. It is the published claim about what the
+# fixtures cover: a consumer holding a corpus of real profiles checks its own
+# against this list, and anything that corpus exercises and this list does not
+# name is a shape the fixtures do not reach.
+#
+# Regenerate after adding or changing a shape:
+#   go test ./caps -run TestShapeInventory -update
+
+directive
+  <ca>
+  <cert>
+  <key>
+  <tls-auth>
+  <tls-crypt>
+  allow-compression
+  allow-recursive-routing
+  auth
+  auth-federate
+  auth-nocache
+  auth-retry
+  auth-user-pass
+  become-primary
+  block-outside-dns
+  ca
+  cert
+  cipher
+  client
+  comp-lzo
+  comp-noadapt
+  compress
+  connect-retry-max
+  connect-timeout
+  data-ciphers
+  data-ciphers-fallback
+  dev
+  dhcp-option
+  down
+  explicit-exit-notify
+  fast-io
+  float
+  fragment
+  group
+  hand-window
+  keepalive
+  key
+  key-direction
+  keysize
+  link-mtu
+  max-routes
+  mssfix
+  mute
+  mute-replay-warnings
+  ncp-disable
+  nobind
+  ns-cert-type
+  persist-key
+  persist-remote-ip
+  persist-tun
+  ping
+  ping-exit
+  ping-restart
+  ping-timer-rem
+  port
+  proto
+  pull
+  push-peer-info
+  rcvbuf
+  redirect-gateway
+  remap-usr1
+  remote
+  remote-cert-tls
+  remote-random
+  remote-random-hostname
+  reneg-bytes
+  reneg-sec
+  resolv-retry
+  route
+  route-delay
+  route-method
+  route-metric
+  script-security
+  setenv
+  sndbuf
+  tls-auth
+  tls-cipher
+  tls-client
+  tls-crypt-v2
+  tls-version-min
+  tran-window
+  tun-ipv6
+  tun-mtu
+  tun-mtu-extra
+  tun-mtu-max
+  up
+  up-restart
+  user
+  verb
+  verify-x509-name
+  x-go-openvpn-flow
+  x-openlawsvpn-flow
+
+argument shape
+  allow-compression: lower-case word
+  allow-recursive-routing: none
+  auth-federate: none
+  auth-nocache: none
+  auth-retry: lower-case word
+  auth-user-pass: none
+  auth: carries upper case
+  auth: lower-case word
+  become-primary: number
+  block-outside-dns: none
+  ca: dotted name
+  cert: dotted name
+  cipher: carries upper case
+  cipher: lower-case word
+  client: none
+  comp-lzo: lower-case word
+  comp-lzo: none
+  comp-noadapt: none
+  compress: lower-case word
+  compress: none
+  connect-retry-max: number
+  connect-timeout: number
+  data-ciphers-fallback: carries upper case
+  data-ciphers: carries upper case
+  dev: lower-case word
+  dhcp-option: address literal
+  dhcp-option: carries upper case
+  down: path
+  explicit-exit-notify: none
+  explicit-exit-notify: number
+  fast-io: none
+  float: none
+  fragment: number
+  group: lower-case word
+  hand-window: number
+  keepalive: number
+  key-direction: number
+  key: dotted name
+  keysize: number
+  link-mtu: number
+  max-routes: number
+  mssfix: number
+  mute-replay-warnings: none
+  mute: number
+  ncp-disable: none
+  nobind: none
+  ns-cert-type: lower-case word
+  persist-key: none
+  persist-remote-ip: none
+  persist-tun: none
+  ping-exit: number
+  ping-restart: number
+  ping-timer-rem: none
+  ping: number
+  port: number
+  proto: carries upper case
+  proto: lower-case word
+  pull: none
+  push-peer-info: none
+  rcvbuf: number
+  redirect-gateway: lower-case word
+  remap-usr1: carries upper case
+  remote-cert-tls: lower-case word
+  remote-random-hostname: none
+  remote-random: none
+  remote: address literal
+  remote: carries upper case
+  remote: dotted name
+  remote: lower-case word
+  remote: number
+  reneg-bytes: number
+  reneg-sec: number
+  resolv-retry: lower-case word
+  resolv-retry: number
+  route-delay: number
+  route-method: lower-case word
+  route-metric: number
+  route: address literal
+  script-security: number
+  setenv: lower-case word
+  sndbuf: number
+  tls-auth: dotted name
+  tls-auth: number
+  tls-cipher: carries upper case
+  tls-client: none
+  tls-crypt-v2: dotted name
+  tls-version-min: address literal
+  tran-window: number
+  tun-ipv6: none
+  tun-mtu-extra: number
+  tun-mtu-max: number
+  tun-mtu: number
+  up-restart: none
+  up: path
+  user: lower-case word
+  verb: number
+  verify-x509-name: dotted name
+  verify-x509-name: lower-case word
+  x-go-openvpn-flow: lower-case word
+  x-openlawsvpn-flow: lower-case word
+
+lexical shape
+  blank line inside an inline block
+  comment inside an inline block
+  comment line
+  crlf line endings

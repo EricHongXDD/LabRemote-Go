@@ -1,0 +1,2 @@
+go test fuzz v1
+string("remote 0\n<ca>\n</ca>")
