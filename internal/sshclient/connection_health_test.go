@@ -37,6 +37,10 @@ func healthTestManager(t *testing.T, mode string) (*Manager, string, <-chan stru
 		t.Fatal(err)
 	}
 	config := &ssh.ServerConfig{NoClientAuth: true}
+	if mode == "auth-rejected" {
+		config.NoClientAuth = false
+		config.PasswordCallback = func(ssh.ConnMetadata, []byte) (*ssh.Permissions, error) { return nil, errors.New("测试认证拒绝") }
+	}
 	config.AddHostKey(signer)
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -56,6 +60,15 @@ func healthTestManager(t *testing.T, mode string) (*Manager, string, <-chan stru
 			mu.Unlock()
 			go func() {
 				defer raw.Close()
+				if mode == "handshake-close" || mode == "handshake-banner-close" {
+					if mode == "handshake-banner-close" {
+						_, _ = io.WriteString(raw, "SSH-2.0-TestPeer\r\n")
+					}
+					// 保留读方向以稳定模拟对端 EOF，而非因未读数据随机触发 RST。
+					_ = raw.(*net.TCPConn).CloseWrite()
+					_, _ = io.Copy(io.Discard, raw)
+					return
+				}
 				if mode == "handshake" {
 					select {
 					case entered <- struct{}{}:
@@ -403,6 +416,32 @@ func TestHandshakeTimeoutDoesNotReportCredentialFailure(t *testing.T) {
 	var appError *model.AppError
 	if !errors.As(err, &appError) || appError.Code != "SSH_HANDSHAKE_TIMEOUT" || !appError.Retryable || appError.Details["reason"] == "" {
 		t.Fatalf("无响应的握手不应归因于密码错误: %v", err)
+	}
+}
+
+func TestHandshakeCloseDoesNotReportCredentialFailure(t *testing.T) {
+	for _, mode := range []string{"handshake-close", "handshake-banner-close"} {
+		t.Run(mode, func(t *testing.T) {
+			manager, id, _ := healthTestManager(t, mode)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			err := manager.Connect(ctx, id)
+			var appError *model.AppError
+			if !errors.As(err, &appError) || appError.Code != "SSH_PEER_CLOSED" || !appError.Retryable || appError.Details["reason"] == "" {
+				t.Fatalf("对端关闭连接不应误报为身份认证失败: %v", err)
+			}
+		})
+	}
+}
+
+func TestRejectedPasswordStillReportsAuthenticationFailure(t *testing.T) {
+	manager, id, _ := healthTestManager(t, "auth-rejected")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := manager.Connect(ctx, id)
+	var appError *model.AppError
+	if !errors.As(err, &appError) || appError.Code != "SSH_AUTH_FAILED" {
+		t.Fatalf("真正的口令认证失败不能误报为网络断开: %v", err)
 	}
 }
 

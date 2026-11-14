@@ -146,7 +146,7 @@ func (s *Service) collectBundleProfile(ctx context.Context, value model.Connecti
 		}
 	}()
 	var err error
-	if value.UsesIsolatedTunnel() {
+	if value.NeedsVPNCredentials() {
 		item.VPNPassword, err = s.requiredBundleSecret(ctx, model.VPNPasswordKey(value.ID), value.DisplayName, "隔离隧道密码")
 		if err != nil {
 			return connectionBundleProfile{}, err
@@ -270,7 +270,7 @@ func (s *Service) ImportConnectionBundle(ctx context.Context, data []byte, passw
 		value.UpdatedAt = now
 		value.ConnectionMode = value.EffectiveConnectionMode()
 		value.SSH.AuthMethod = value.SSH.EffectiveAuthMethod()
-		if value.UsesIsolatedTunnel() {
+		if value.NeedsVPNCredentials() {
 			value.VPN.ConnectionName = value.DisplayName
 			value.VPN.CredentialRef = model.VPNPasswordKey(value.ID)
 			if len(item.VPNPassword) == 0 {
@@ -344,7 +344,7 @@ func (s *Service) ImportConnectionBundle(ctx context.Context, data []byte, passw
 		} else if err := s.secrets.Put(ctx, model.SSHPasswordKey(plan.profile.ID), item.SSHPassword); err != nil {
 			return result, importSecretStoreError()
 		}
-		if plan.profile.UsesIsolatedTunnel() {
+		if plan.profile.NeedsVPNCredentials() {
 			if err := s.secrets.Put(ctx, model.VPNPasswordKey(plan.profile.ID), item.VPNPassword); err != nil {
 				return result, importSecretStoreError()
 			}

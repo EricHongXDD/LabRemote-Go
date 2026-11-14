@@ -1,7 +1,8 @@
-import {useEffect, useState} from 'react'
+import {useEffect, useRef, useState} from 'react'
 import type {ConnectionMode, ConnectionProfile, ConnectionTestResult, SaveProfileRequest, SSHAuthMethod, TestConnectionRequest} from '../types'
-import {connectionMode, emptyProfile, sshAuthMethod, usesIsolatedTunnel, validateProfile} from '../lib/profile'
+import {connectionMode, emptyProfile, sshAuthMethod, usesVPN, usesIsolatedTunnel, validATrustAddress, validateProfile} from '../lib/profile'
 import {parseAppError} from '../lib/errors'
+import Select from './Select'
 
 type Props = {
   value: ConnectionProfile | null
@@ -10,6 +11,8 @@ type Props = {
   onSave: (request: SaveProfileRequest) => Promise<void>
   onTestTunnel: (request: TestConnectionRequest) => Promise<ConnectionTestResult>
   onTestSSH: (request: TestConnectionRequest) => Promise<ConnectionTestResult>
+  onCloseTestSession: (sessionID: string) => Promise<void>
+  onImportOpenVPNConfig: () => Promise<string>
   onSelectSSHPrivateKey: () => Promise<string>
   onClearSecret: (profileId: string, kind: 'vpn_psk' | 'vpn_password' | 'ssh_password' | 'ssh_private_key') => Promise<void>
 }
@@ -17,7 +20,14 @@ type Props = {
 type TestKind = 'tunnel' | 'ssh'
 type TestFeedback = {state: 'success' | 'error'; message: string}
 
-export default function ProfileDialog({value, copySourceProfileID, onCancel, onSave, onTestTunnel, onTestSSH, onSelectSSHPrivateKey, onClearSecret}: Props) {
+export default function ProfileDialog({value, copySourceProfileID, onCancel, onSave, onTestTunnel, onTestSSH, onCloseTestSession, onImportOpenVPNConfig, onSelectSSHPrivateKey, onClearSecret}: Props) {
+  const testSessionID = useRef(crypto.randomUUID())
+  const resetTestSession = () => {
+    const previous = testSessionID.current
+    testSessionID.current = crypto.randomUUID()
+    void onCloseTestSession(previous).catch(() => {})
+  }
+  useEffect(() => () => { void onCloseTestSession(testSessionID.current).catch(() => {}) }, [onCloseTestSession])
   const [profile, setProfile] = useState<ConnectionProfile>(emptyProfile())
   const [vpnPassword, setVPNPassword] = useState('')
   const [sshPassword, setSSHPassword] = useState('')
@@ -28,14 +38,18 @@ export default function ProfileDialog({value, copySourceProfileID, onCancel, onS
   const [testing, setTesting] = useState<TestKind | null>(null)
   const [testFeedback, setTestFeedback] = useState<Partial<Record<TestKind, TestFeedback>>>({})
   const isTunnel = usesIsolatedTunnel(profile)
+  const isATrust = connectionMode(profile) === 'atrust_ssh'
+  const hasNetworkStep = isTunnel || isATrust
+  const isOpenVPN = connectionMode(profile) === 'openvpn_ssh'
   const isPrivateKey = sshAuthMethod(profile) === 'private_key'
   const isCopy = Boolean(copySourceProfileID)
   const isExisting = Boolean(value?.id) && !isCopy
-  const canReuseTunnelCredential = Boolean(value && usesIsolatedTunnel(value) && isTunnel)
+  const canReuseTunnelCredential = Boolean(value && usesVPN(value) && connectionMode(value) === connectionMode(profile) && isTunnel)
   const canReuseSSHPassword = Boolean(value && sshAuthMethod(value) === 'password' && !isPrivateKey)
   const canReuseSSHPrivateKey = Boolean(value && sshAuthMethod(value) === 'private_key' && isPrivateKey)
 
   useEffect(() => {
+    resetTestSession()
     const next = value ? structuredClone(value) : emptyProfile()
     next.connection_mode = connectionMode(next)
     next.ssh.auth_method = sshAuthMethod(next)
@@ -58,6 +72,7 @@ export default function ProfileDialog({value, copySourceProfileID, onCancel, onS
   }, [onCancel, saving, testing])
 
   const updateVPN = (key: string, fieldValue: string | number | boolean) => {
+    resetTestSession()
     setProfile(current => ({...current, vpn: {...current.vpn, [key]: fieldValue}}))
     setTestFeedback({})
   }
@@ -68,7 +83,8 @@ export default function ProfileDialog({value, copySourceProfileID, onCancel, onS
   }
 
   const updateConnectionMode = (mode: ConnectionMode) => {
-    setProfile(current => ({...current, connection_mode: mode}))
+    resetTestSession()
+    setProfile(current => ({...current, connection_mode: mode, vpn: {...current.vpn, type: mode === 'openvpn_ssh' ? 'openvpn' : mode === 'atrust_ssh' ? 'atrust' : 'softether'}}))
     setTestFeedback({})
     setError('')
   }
@@ -110,6 +126,7 @@ export default function ProfileDialog({value, copySourceProfileID, onCancel, onS
     const normalized = normalizedProfile()
     return {
       profile: copySourceProfileID ? {...normalized, id: copySourceProfileID} : normalized,
+      test_session_id: testSessionID.current,
       vpn_password: vpnPassword,
       ssh_password: sshPassword,
       ssh_private_key_path: sshPrivateKeyPath,
@@ -119,7 +136,9 @@ export default function ProfileDialog({value, copySourceProfileID, onCancel, onS
 
   const validateTunnelTest = (): string | null => {
     if (!profile.display_name.trim()) return '请先填写连接名称'
-    if (!profile.vpn.server_address.trim()) return '请先填写 SoftEther 服务器'
+    if (isATrust) return validATrustAddress(profile.vpn.server_address) ? null : '请先填写有效的 aTrust HTTPS 服务器地址'
+    if (isOpenVPN && !profile.vpn.openvpn_config?.trim()) return '请先导入 OpenVPN 配置'
+    if (!isOpenVPN && !profile.vpn.server_address.trim()) return '请先填写 SoftEther 服务器'
     if (!profile.vpn.username.trim()) return '请先填写隧道用户名'
     if (!canReuseTunnelCredential && !vpnPassword) return '请先填写隧道密码'
     return null
@@ -158,8 +177,8 @@ export default function ProfileDialog({value, copySourceProfileID, onCancel, onS
 
   const submit = async () => {
     const normalized = normalizedProfile()
-    if (isTunnel && !canReuseTunnelCredential && !vpnPassword) {
-      setError('切换为隔离隧道连接时必须填写隧道密码')
+    if (isTunnel && !isATrust && !canReuseTunnelCredential && !vpnPassword) {
+      setError('请填写 VPN 登录密码')
       return
     }
     if (!isPrivateKey && !canReuseSSHPassword && !sshPassword) {
@@ -212,24 +231,26 @@ export default function ProfileDialog({value, copySourceProfileID, onCancel, onS
         <div className="form-columns">
           <div className="connection-mode-bar">
             <label>连接名称<input autoFocus maxLength={64} value={profile.display_name} onChange={event => { setProfile(current => ({...current, display_name: event.target.value})); setTestFeedback({}) }} /></label>
-            <label>连接方式<select value={connectionMode(profile)} onChange={event => updateConnectionMode(event.target.value as ConnectionMode)}>
-              <option value="isolated_tunnel">隔离隧道 + SSH</option>
-              <option value="direct_ssh">仅 SSH（直接连接）</option>
-            </select></label>
-            <p>{isTunnel ? '先建立进程内 SoftEther 隔离隧道，再连接内网 SSH。' : '直接连接 SSH 服务器；网页访问仍通过 SSH 转发，可访问远端主机的本机或内网端口。'}</p>
+            <label>连接方式<Select label="连接方式" value={connectionMode(profile)} onChange={mode => updateConnectionMode(mode as ConnectionMode)} options={[
+              {value: 'isolated_tunnel', label: '隔离隧道 + SSH'},
+              {value: 'openvpn_ssh', label: 'OpenVPN 隔离隧道 + SSH（OTP）'},
+              {value: 'atrust_ssh', label: 'aTrust 隔离隧道 + SSH（网页登录）'},
+              {value: 'direct_ssh', label: '仅 SSH（直接连接）'},
+            ]} /></label>
+            <p>{isATrust ? '在独立网页窗口完成认证，仅为配置的 SSH 目标建立进程内 TCP 通道。' : isOpenVPN ? '导入 OpenVPN 配置，在进程内建立 OpenVPN 隔离隧道，按提示输入验证码，再访问 SSH。' : isTunnel ? '先建立进程内 SoftEther 隔离隧道，再连接内网 SSH。' : '直接连接 SSH 服务器；网页访问仍通过 SSH 转发，可访问远端主机的本机或内网端口。'}</p>
           </div>
 
-          {isTunnel && <fieldset className="connection-fieldset">
+          {!isOpenVPN && !isATrust && isTunnel && <fieldset className="connection-fieldset">
             <legend><span>01</span> 隔离隧道</legend>
             <label>SoftEther 服务器<input value={profile.vpn.server_address} onChange={event => updateVPN('server_address', event.target.value)} /></label>
             <div className="form-row two-columns">
               <label>端口<input type="number" min={1} max={65535} value={profile.vpn.server_port || 992} onChange={event => updateVPN('server_port', Number(event.target.value))} /></label>
               <label>Virtual Hub（可选）<input value={profile.vpn.hub_name || ''} placeholder="自动发现" onChange={event => updateVPN('hub_name', event.target.value)} /></label>
             </div>
-            <label>传输类型<select value={profile.vpn.type || 'softether'} onChange={event => updateVPN('type', event.target.value)}><option value="softether">SoftEther 原生协议（进程内隔离）</option></select></label>
+            <label>传输类型<Select label="传输类型" value={profile.vpn.type || 'softether'} onChange={type => updateVPN('type', type)} options={[{value: 'softether', label: 'SoftEther 原生协议（进程内隔离）'}]} /></label>
             <div className="form-row two-columns">
               <label>用户名<input value={profile.vpn.username} onChange={event => updateVPN('username', event.target.value)} autoComplete="username" /></label>
-              <label>密码<input type="password" value={vpnPassword} placeholder={canReuseTunnelCredential ? (isCopy ? '留空复制已保存密码' : '留空保留') : '必填'} onChange={event => { setVPNPassword(event.target.value); setTestFeedback({}) }} autoComplete="new-password" />{isExisting && value && <button type="button" className="clear-secret" onClick={() => onClearSecret(value.id, 'vpn_password')}>清除已保存密码</button>}</label>
+              <label>密码<input type="password" value={vpnPassword} placeholder={canReuseTunnelCredential ? (isCopy ? '留空复制已保存密码' : '留空保留') : '必填'} onChange={event => { resetTestSession(); setVPNPassword(event.target.value); setTestFeedback({}) }} autoComplete="new-password" />{isExisting && value && <button type="button" className="clear-secret" onClick={() => onClearSecret(value.id, 'vpn_password')}>清除已保存密码</button>}</label>
             </div>
             <div className="connection-test-row">
               <button type="button" className="test-connection-button" disabled={Boolean(testing) || saving} onClick={() => void testConnection('tunnel')}>{testing === 'tunnel' ? '正在测试…' : '测试隔离隧道'}</button>
@@ -238,16 +259,43 @@ export default function ProfileDialog({value, copySourceProfileID, onCancel, onS
             <p className="form-note">测试在临时用户态网络中完成，不创建 Windows VPN、网卡或系统路由。</p>
           </fieldset>}
 
-          <fieldset className={`connection-fieldset ${isTunnel ? '' : 'direct-profile-fieldset'}`}>
-            <legend><span>{isTunnel ? '02' : '01'}</span> SSH 服务器</legend>
+          {isATrust && <fieldset className="connection-fieldset atrust-fieldset">
+            <legend><span>01</span> aTrust VPN</legend>
+            <label>服务器地址<input value={profile.vpn.server_address} placeholder="https://vpn.example.com" onChange={event => updateVPN('server_address', event.target.value)} spellCheck={false} /></label>
+            <div className="atrust-login-steps">
+              <p><b>1</b>点击认证或测试 SSH，按提示打开独立认证窗口。</p>
+              <p><b>2</b>在服务提供方页面手动完成登录及验证码认证。</p>
+              <p><b>3</b>认证完成后仅连接右侧 SSH 目标，后续测试复用会话。</p>
+            </div>
+            <div className="connection-test-row"><button type="button" className="test-connection-button" disabled={saving || Boolean(testing)} onClick={() => void testConnection('tunnel')}>{testing === 'tunnel' ? '正在认证…' : '认证 aTrust'}</button>{renderFeedback('tunnel')}</div>
+            <p className="form-note">协议适配正在验收。使用应用进程内的目标 TCP 通道，不启动 aTrust 客户端、不创建系统 VPN、路由或代理。网页访问与文件传输均沿用 SSH；通道不可用时不会系统直连。</p>
+          </fieldset>}
+
+          {isOpenVPN && <fieldset className="connection-fieldset">
+            <legend><span>01</span> OpenVPN</legend>
+            <label>配置文件（.ovpn / ZIP）<div className="private-key-picker"><input readOnly value={profile.vpn.openvpn_config ? '已导入 OpenVPN 配置（含 CA 与备用服务器）' : ''} placeholder="选择 .ovpn 或包含配置的 ZIP 文件" /><button type="button" disabled={Boolean(testing) || saving} onClick={async () => {
+              try { const config = await onImportOpenVPNConfig(); if (config) { updateVPN('openvpn_config', config); setError('') } }
+              catch (reason) { setError(parseAppError(reason).message) }
+            }}>导入…</button></div></label>
+            <div className="form-row two-columns">
+              <label>VPN 用户名<input value={profile.vpn.username} onChange={event => updateVPN('username', event.target.value)} autoComplete="username" /></label>
+              <label>VPN 密码<input type="password" value={vpnPassword} placeholder={canReuseTunnelCredential ? '留空保留已保存密码' : '必填'} onChange={event => { resetTestSession(); setVPNPassword(event.target.value); setTestFeedback({}) }} autoComplete="new-password" />{isExisting && value && <button type="button" className="clear-secret" onClick={() => onClearSecret(value.id, 'vpn_password')}>清除已保存密码</button>}</label>
+            </div>
+            <p className="form-note">连接请求 OTP / TOTP 时会弹窗输入当前 6 位验证码。请从 VPN 服务提供方指定的验证器或令牌平台获取，无需填写令牌密钥。</p>
+            <div className="connection-test-row"><button type="button" className="test-connection-button" disabled={Boolean(testing) || saving} onClick={() => void testConnection('tunnel')}>{testing === 'tunnel' ? '正在测试…' : '测试 OpenVPN'}</button>{renderFeedback('tunnel')}</div>
+            <p className="form-note">同一窗口中的 VPN 与 SSH 测试复用已认证隧道，调整 SSH 参数或测试失败无需再次输入 OTP。更改 VPN 配置、关闭窗口或空闲 15 分钟后回收测试连接。全程使用进程内隔离网络。</p>
+          </fieldset>}
+
+          <fieldset className={`connection-fieldset ${hasNetworkStep ? '' : 'direct-profile-fieldset'}`}>
+            <legend><span>{hasNetworkStep ? '02' : '01'}</span> SSH 服务器</legend>
             <label>服务器地址<input value={profile.ssh.server_address} onChange={event => updateSSH('server_address', event.target.value)} /></label>
             <div className="form-row three-columns">
               <label>端口<input type="number" min={1} max={65535} value={profile.ssh.port} onChange={event => updateSSH('port', Number(event.target.value))} /></label>
               <label>用户名<input value={profile.ssh.username} onChange={event => updateSSH('username', event.target.value)} autoComplete="username" /></label>
-              <label>认证方式<select value={sshAuthMethod(profile)} onChange={event => updateSSHAuthMethod(event.target.value as SSHAuthMethod)}>
-                <option value="password">密码</option>
-                <option value="private_key">私钥文件</option>
-              </select></label>
+              <label>认证方式<Select label="认证方式" value={sshAuthMethod(profile)} onChange={method => updateSSHAuthMethod(method as SSHAuthMethod)} options={[
+                {value: 'password', label: '密码'},
+                {value: 'private_key', label: '私钥文件'},
+              ]} /></label>
             </div>
             {!isPrivateKey && <label>SSH 密码<input type="password" value={sshPassword} placeholder={canReuseSSHPassword ? (isCopy ? '留空复制已保存密码' : '留空保留') : '必填'} onChange={event => { setSSHPassword(event.target.value); setTestFeedback(current => ({...current, ssh: undefined})) }} autoComplete="new-password" />{isExisting && value && <button type="button" className="clear-secret" onClick={() => onClearSecret(value.id, 'ssh_password')}>清除已保存密码</button>}</label>}
             {isPrivateKey && <div className="form-row two-columns ssh-key-fields">

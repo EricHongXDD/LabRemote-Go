@@ -1,7 +1,41 @@
 import {describe, expect, it} from 'vitest'
-import {connectionMode, createProfileCopyDraft, emptyProfile, sshAuthMethod, validateProfile} from './profile'
+import {connectionMode, createProfileCopyDraft, emptyProfile, sshAuthMethod, usesIsolatedTunnel, usesVPN, validATrustAddress, validateProfile} from './profile'
 
 describe('validateProfile', () => {
+  it('aTrust 使用官方认证，不要求 VPN 密码或 OpenVPN 配置', () => {
+    const value = emptyProfile()
+    value.connection_mode = 'atrust_ssh'
+    value.display_name = '客户端 VPN'
+    value.vpn.server_address = 'https://vpn.example.com'
+    value.ssh.server_address = '192.0.2.10'
+    value.ssh.username = 'ubuntu'
+    expect(connectionMode(value)).toBe('atrust_ssh')
+    expect(usesVPN(value)).toBe(true)
+    expect(usesIsolatedTunnel(value)).toBe(true)
+    expect(validateProfile(value, true, {vpnPassword: '', sshPassword: 'ssh-test', sshPrivateKeyPath: ''})).toBeNull()
+    for (const address of ['http://vpn.example.com', 'https://user:secret@vpn.example.com', 'https://vpn.example.com/?token=secret', 'https://vpn.example.com:0', 'https://vpn.example.com/login']) expect(validATrustAddress(address)).toBe(false)
+    expect(validATrustAddress('vpn.example.com:8443')).toBe(true)
+  })
+  it('OpenVPN 要求配置和统一认证账号密码，不要求 SoftEther 端点', () => {
+    const value = emptyProfile()
+    value.connection_mode = 'openvpn_ssh'
+    value.display_name = '学校服务器'
+    value.ssh.server_address = '192.0.2.7'
+    value.ssh.username = 'lab'
+    const credentials = {vpnPassword: 'vpn', sshPassword: 'ssh', sshPrivateKeyPath: ''}
+    expect(connectionMode(value)).toBe('openvpn_ssh')
+    expect(usesVPN(value)).toBe(true)
+    expect(usesIsolatedTunnel(value)).toBe(true)
+    expect(validateProfile(value, true, credentials)).toContain('导入')
+    value.vpn.openvpn_config = 'client\n'
+    expect(validateProfile(value, true, credentials)).toContain('VPN 用户名')
+    value.vpn.username = 'student'
+    expect(validateProfile(value, true, {...credentials, vpnPassword: ''})).toContain('密码')
+    expect(validateProfile(value, true, credentials)).toBeNull()
+    const copy = createProfileCopyDraft(value)
+    expect(copy.vpn.openvpn_config).toBe(value.vpn.openvpn_config)
+    expect(copy.connection_mode).toBe('openvpn_ssh')
+  })
   it('新连接默认不向 MCP 开放本地文件上传', () => {
     expect(emptyProfile().mcp_policy.allow_file_upload).toBe(false)
   })

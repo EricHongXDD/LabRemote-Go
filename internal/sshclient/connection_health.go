@@ -186,7 +186,7 @@ func watchTransfer(ctx context.Context, activity *transferActivity, idle time.Du
 
 // newSFTPClient 使用独立的 SSH 传输，使取消或停滞清理不影响已有终端和命令。
 func (m *Manager) newSFTPClient(ctx context.Context, profileID string, options ...sftp.ClientOption) (*sftp.Client, func(), error) {
-	setupContext, cancelSetup := context.WithTimeout(ctx, 45*time.Second)
+	setupContext, cancelSetup := context.WithTimeout(ctx, m.connectionSetupTimeout(ctx, profileID))
 	defer cancelSetup()
 	transport, err := m.dialSSH(setupContext, profileID)
 	if err != nil {

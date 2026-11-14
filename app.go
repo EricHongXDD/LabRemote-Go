@@ -16,6 +16,7 @@ import (
 	"github.com/EricHongXDD/LabRemote-Go/internal/logging"
 	"github.com/EricHongXDD/LabRemote-Go/internal/mcpserver"
 	"github.com/EricHongXDD/LabRemote-Go/internal/model"
+	"github.com/EricHongXDD/LabRemote-Go/internal/openvpn"
 	"github.com/EricHongXDD/LabRemote-Go/internal/profile"
 	"github.com/EricHongXDD/LabRemote-Go/internal/secrets"
 	"github.com/EricHongXDD/LabRemote-Go/internal/sshclient"
@@ -212,6 +213,10 @@ func (a *DesktopApp) TestSSHConnection(request appcore.TestConnectionRequest) (a
 	return a.service.TestSSHConnection(a.ctx, request)
 }
 
+func (a *DesktopApp) CloseConnectionTestSession(sessionID string) {
+	a.service.CloseConnectionTestSession(sessionID)
+}
+
 func (a *DesktopApp) ConnectAndOpenTerminal(profileID string, cols, rows int) (string, error) {
 	return a.service.ConnectAndOpenTerminal(a.ctx, profileID, cols, rows)
 }
@@ -267,6 +272,25 @@ func (a *DesktopApp) SelectSSHPrivateKey() (string, error) {
 			{DisplayName: "所有文件", Pattern: "*"},
 		},
 	})
+}
+
+func (a *DesktopApp) ImportOpenVPNConfig() (string, error) {
+	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:   "导入 OpenVPN 配置",
+		Filters: []runtime.FileFilter{{DisplayName: "OpenVPN 配置或 ZIP", Pattern: "*.ovpn;*.zip"}},
+	})
+	if err != nil || path == "" {
+		return "", err
+	}
+	config, err := openvpn.Import(path)
+	if err != nil {
+		return "", model.NewAppError("OPENVPN_CONFIG_INVALID", err.Error(), "openvpn_import", false)
+	}
+	return config, nil
+}
+
+func (a *DesktopApp) SubmitOpenVPNOTP(id, code string) error {
+	return a.service.SubmitOpenVPNOTP(id, code)
 }
 
 func (a *DesktopApp) SelectUploadFiles() ([]model.UploadSelection, error) {

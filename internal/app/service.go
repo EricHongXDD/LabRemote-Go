@@ -3,9 +3,9 @@ package app
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/EricHongXDD/LabRemote-Go/internal/browserproxy"
@@ -30,6 +30,7 @@ type SaveProfileRequest struct {
 }
 
 type TestConnectionRequest struct {
+	TestSessionID           string                  `json:"test_session_id,omitempty"`
 	Profile                 model.ConnectionProfile `json:"profile"`
 	VPNPassword             string                  `json:"vpn_password"`
 	SSHPassword             string                  `json:"ssh_password"`
@@ -48,12 +49,15 @@ type ConnectionTestResult struct {
 }
 
 type Service struct {
-	profiles   profile.Repository
-	secrets    secrets.Store
-	vpn        vpn.Transport
-	ssh        *sshclient.Manager
-	knownHosts *sshclient.KnownHosts
-	browser    *browserproxy.Manager
+	testMu       sync.Mutex
+	testSessions map[string]*connectionTestSession
+	testsClosed  bool
+	profiles     profile.Repository
+	secrets      secrets.Store
+	vpn          vpn.Transport
+	ssh          *sshclient.Manager
+	knownHosts   *sshclient.KnownHosts
+	browser      *browserproxy.Manager
 }
 
 func NewService(profiles profile.Repository, secretStore secrets.Store, vpnManager vpn.Transport, sshManager *sshclient.Manager, knownHosts *sshclient.KnownHosts) *Service {
@@ -102,7 +106,14 @@ func (s *Service) SaveProfile(ctx context.Context, request SaveProfileRequest) (
 	value.DisplayName = strings.TrimSpace(value.DisplayName)
 	value.ConnectionMode = value.EffectiveConnectionMode()
 	value.SSH.AuthMethod = value.SSH.EffectiveAuthMethod()
-	if value.UsesIsolatedTunnel() {
+	if err := normalizeATrustProfile(&value); err != nil {
+		return model.ConnectionProfile{}, err
+	}
+	if value.EffectiveConnectionMode() == model.ConnectionModeOpenVPNSSH {
+		value.VPN.Type = model.VPNTypeOpenVPN
+		value.VPN.ConnectionName = value.DisplayName
+	}
+	if value.EffectiveConnectionMode() == model.ConnectionModeIsolatedTunnel {
 		value.VPN.ConnectionName = value.DisplayName
 		value.VPN.Type = model.VPNTypeSoftEther
 		value.VPN.SplitTunnel = true
@@ -110,7 +121,7 @@ func (s *Service) SaveProfile(ctx context.Context, request SaveProfileRequest) (
 			value.VPN.ServerPort = 992
 		}
 	}
-	if value.UsesIsolatedTunnel() {
+	if value.EffectiveConnectionMode() == model.ConnectionModeIsolatedTunnel || value.EffectiveConnectionMode() == model.ConnectionModeATrustSSH {
 		switch {
 		case !isNew && !sameTunnelEndpoint(previous, value):
 			value.VPN.ServerCertificate = ""
@@ -120,7 +131,7 @@ func (s *Service) SaveProfile(ctx context.Context, request SaveProfileRequest) (
 			value.VPN.ServerCertificate = ""
 		}
 	}
-	if value.UsesIsolatedTunnel() {
+	if value.NeedsVPNCredentials() {
 		value.VPN.CredentialRef = model.VPNPasswordKey(value.ID)
 	} else {
 		value.VPN.CredentialRef = ""
@@ -180,9 +191,12 @@ func (s *Service) SaveProfile(ctx context.Context, request SaveProfileRequest) (
 			secretValues = append(secretValues, secretValue{model.SSHPasswordKey(value.ID), sshPassword})
 		}
 	}
-	if value.UsesIsolatedTunnel() {
+	if value.NeedsVPNCredentials() {
+		if request.VPNPassword == "" && ((!isNew && previous.EffectiveConnectionMode() != value.EffectiveConnectionMode()) || (isNew && hasCopySource && copySource.EffectiveConnectionMode() != value.EffectiveConnectionMode())) {
+			return model.ConnectionProfile{}, model.NewAppError("PROFILE_INVALID", "切换 VPN 类型时请重新输入登录密码", "profile", false)
+		}
 		credentialKey := model.VPNPasswordKey(value.ID)
-		if isNew && hasCopySource && copySource.UsesIsolatedTunnel() {
+		if isNew && hasCopySource && copySource.NeedsVPNCredentials() && copySource.EffectiveConnectionMode() == value.EffectiveConnectionMode() {
 			credentialKey = model.VPNPasswordKey(copySource.ID)
 		}
 		vpnPassword, resolveErr := s.resolvePasswordCredential(ctx, credentialKey, request.VPNPassword, "隔离隧道密码")
@@ -194,11 +208,11 @@ func (s *Service) SaveProfile(ctx context.Context, request SaveProfileRequest) (
 			secretValues = append(secretValues, secretValue{model.VPNPasswordKey(value.ID), vpnPassword})
 		}
 	}
-	if value.UsesIsolatedTunnel() {
+	if value.NeedsVPNCredentials() {
 		var vpnPreSharedKey []byte
 		if request.VPNPreSharedKey != "" {
 			vpnPreSharedKey = []byte(request.VPNPreSharedKey)
-		} else if isNew && hasCopySource && copySource.UsesIsolatedTunnel() {
+		} else if isNew && hasCopySource && copySource.NeedsVPNCredentials() {
 			vpnPreSharedKey, err = s.secrets.Get(ctx, model.VPNPSKKey(copySource.ID))
 			if errors.Is(err, secrets.ErrNotFound) {
 				err = nil
@@ -247,7 +261,7 @@ func (s *Service) SaveProfile(ctx context.Context, request SaveProfileRequest) (
 		return model.ConnectionProfile{}, err
 	}
 	credentialChanged := request.SSHPassword != "" || strings.TrimSpace(request.SSHPrivateKeyPath) != "" || request.SSHPrivateKeyPassphrase != ""
-	connectionChanged := !isNew && (previous.EffectiveConnectionMode() != value.EffectiveConnectionMode() || previous.SSH.EffectiveAuthMethod() != value.SSH.EffectiveAuthMethod() || !sameSSHEndpoint(previous, value) || credentialChanged)
+	connectionChanged := !isNew && (previous.EffectiveConnectionMode() != value.EffectiveConnectionMode() || previous.SSH.EffectiveAuthMethod() != value.SSH.EffectiveAuthMethod() || !sameSSHEndpoint(previous, value) || credentialChanged || (!sameTunnelEndpoint(previous, value) && value.UsesVPN()) || request.VPNPassword != "")
 	if connectionChanged {
 		s.browser.CloseProfile(ctx, value.ID)
 		s.ssh.CloseProfile(ctx, value.ID)
@@ -342,7 +356,7 @@ func (s *Service) ClearCredential(ctx context.Context, profileID, kind string) e
 
 func (s *Service) TestTunnelConnection(ctx context.Context, request TestConnectionRequest) (ConnectionTestResult, error) {
 	if !request.Profile.UsesIsolatedTunnel() {
-		return ConnectionTestResult{}, model.NewAppError("TUNNEL_NOT_REQUIRED", "仅 SSH 连接不需要测试隔离隧道", "connection_test", false)
+		return ConnectionTestResult{}, model.NewAppError("TUNNEL_NOT_REQUIRED", "仅 SSH 连接不需要测试隔离隧道，请测试 SSH 服务器", "connection_test", false)
 	}
 	return s.runConnectionTest(ctx, request, false)
 }
@@ -353,7 +367,12 @@ func (s *Service) TestSSHConnection(ctx context.Context, request TestConnectionR
 
 func (s *Service) runConnectionTest(ctx context.Context, request TestConnectionRequest, includeSSH bool) (ConnectionTestResult, error) {
 	startedAt := time.Now()
-	probeContext, cancel := context.WithTimeout(ctx, 50*time.Second)
+	timeout := 3 * time.Minute
+	if request.Profile.EffectiveConnectionMode() == model.ConnectionModeATrustSSH {
+		// 网页认证可能包含扫码及二次验证，不能沿用普通 SSH 的短超时。
+		timeout = 5 * time.Minute
+	}
+	probeContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	value := request.Profile
@@ -369,11 +388,25 @@ func (s *Service) runConnectionTest(ctx context.Context, request TestConnectionR
 		hasSavedProfile = true
 	}
 
-	value.ID = "connection-test-" + uuid.NewString()
+	entry, release, err := s.acquireConnectionTestSession(probeContext, request)
+	if err != nil {
+		return ConnectionTestResult{}, err
+	}
+	defer release()
+	stopSessionCancellation := context.AfterFunc(entry.ctx, cancel)
+	defer stopSessionCancellation()
+	value.ID = entry.id
 	value.DisplayName = strings.TrimSpace(value.DisplayName)
 	value.ConnectionMode = value.EffectiveConnectionMode()
 	value.SSH.AuthMethod = value.SSH.EffectiveAuthMethod()
-	if value.UsesIsolatedTunnel() {
+	if err := normalizeATrustProfile(&value); err != nil {
+		return ConnectionTestResult{}, err
+	}
+	if value.EffectiveConnectionMode() == model.ConnectionModeOpenVPNSSH {
+		value.VPN.Type = model.VPNTypeOpenVPN
+		value.VPN.ConnectionName = value.DisplayName
+	}
+	if value.EffectiveConnectionMode() == model.ConnectionModeIsolatedTunnel {
 		value.VPN.ConnectionName = value.DisplayName
 		value.VPN.Type = model.VPNTypeSoftEther
 		value.VPN.SplitTunnel = true
@@ -381,12 +414,12 @@ func (s *Service) runConnectionTest(ctx context.Context, request TestConnectionR
 			value.VPN.ServerPort = 992
 		}
 	}
-	if value.UsesIsolatedTunnel() && hasSavedProfile && sameTunnelEndpoint(value, savedProfile) {
+	if value.EffectiveConnectionMode() != model.ConnectionModeDirectSSH && hasSavedProfile && sameTunnelEndpoint(value, savedProfile) {
 		value.VPN.ServerCertificate = savedProfile.VPN.ServerCertificate
-	} else if value.UsesIsolatedTunnel() {
+	} else if value.EffectiveConnectionMode() == model.ConnectionModeIsolatedTunnel {
 		value.VPN.ServerCertificate = ""
 	}
-	if value.UsesIsolatedTunnel() {
+	if value.NeedsVPNCredentials() {
 		value.VPN.CredentialRef = model.VPNPasswordKey(value.ID)
 	} else {
 		value.VPN.CredentialRef = ""
@@ -401,7 +434,7 @@ func (s *Service) runConnectionTest(ctx context.Context, request TestConnectionR
 	vpnCredentialProfileID := originalProfileID
 	sshCredentialProfileID := originalProfileID
 	if hasSavedProfile {
-		if !savedProfile.UsesIsolatedTunnel() || !value.UsesIsolatedTunnel() {
+		if !savedProfile.NeedsVPNCredentials() || !value.NeedsVPNCredentials() || savedProfile.EffectiveConnectionMode() != value.EffectiveConnectionMode() {
 			vpnCredentialProfileID = ""
 		}
 		if savedProfile.SSH.EffectiveAuthMethod() != value.SSH.EffectiveAuthMethod() {
@@ -418,25 +451,43 @@ func (s *Service) runConnectionTest(ctx context.Context, request TestConnectionR
 		return ConnectionTestResult{}, err
 	}
 
-	temporaryRoot, err := os.MkdirTemp("", "labremote-connection-test-")
-	if err != nil {
-		return ConnectionTestResult{}, model.NewAppError("CONNECTION_TEST_FAILED", "无法创建连接测试环境", "connection_test", true)
-	}
-	defer os.RemoveAll(temporaryRoot)
-	temporaryRepository := profile.NewJSONRepository(filepath.Join(temporaryRoot, "profiles.json"))
+	temporaryRoot, temporaryRepository, temporarySecrets := entry.root, entry.repository, entry.secrets
 	if err := temporaryRepository.Upsert(probeContext, value); err != nil {
 		return ConnectionTestResult{}, err
 	}
-
-	temporarySecrets := secrets.NewMemoryStore()
-	transport := vpn.NewIsolatedManager(temporaryRepository, temporarySecrets, events.Nop{})
-	defer transport.Shutdown(context.Background())
+	defer entry.clearSSHSecrets()
+	transport := entry.transport
+	if value.EffectiveConnectionMode() == model.ConnectionModeATrustSSH {
+		signature := tunnelTestSignature(value, nil)
+		if signature != entry.signature {
+			entry.transport.Shutdown(context.Background())
+			entry.transport = s.newTestTransport(entry)
+			transport = entry.transport
+			entry.signature = signature
+			entry.certificatePin = ""
+		}
+		if entry.certificatePin != "" {
+			value.VPN.ServerCertificate = entry.certificatePin
+			if err := temporaryRepository.Upsert(probeContext, value); err != nil {
+				return ConnectionTestResult{}, err
+			}
+		}
+	}
 	status := model.VPNStatus{}
 	tunnelFingerprint := ""
-	if value.UsesIsolatedTunnel() {
+	if value.NeedsVPNCredentials() {
 		vpnPassword, secretErr := s.connectionTestSecret(probeContext, vpnCredentialProfileID, request.VPNPassword, model.VPNPasswordKey, "隔离隧道密码")
 		if secretErr != nil {
 			return ConnectionTestResult{}, secretErr
+		}
+		if value.EffectiveConnectionMode() == model.ConnectionModeOpenVPNSSH {
+			signature := tunnelTestSignature(value, vpnPassword)
+			if signature != entry.signature {
+				entry.transport.Shutdown(context.Background())
+				entry.transport = s.newTestTransport(entry)
+				transport = entry.transport
+				entry.signature = signature
+			}
 		}
 		if secretErr := temporarySecrets.Put(probeContext, model.VPNPasswordKey(value.ID), vpnPassword); secretErr != nil {
 			secrets.Zero(vpnPassword)
@@ -451,9 +502,16 @@ func (s *Service) runConnectionTest(ctx context.Context, request TestConnectionR
 		return ConnectionTestResult{}, err
 	}
 	if !includeSSH {
+		message := "隔离隧道认证及用户态网络初始化成功"
+		if value.EffectiveConnectionMode() == model.ConnectionModeATrustSSH {
+			message = "aTrust 网页认证及授权资源初始化成功，目标连通性请继续测试 SSH"
+		}
+		if value.EffectiveConnectionMode() == model.ConnectionModeOpenVPNSSH {
+			message = "OpenVPN 认证及进程内隔离网络初始化成功"
+		}
 		return ConnectionTestResult{
 			Success: true, Kind: "tunnel",
-			Message:   "隔离隧道认证及用户态网络初始化成功",
+			Message:   message,
 			IPAddress: status.IPAddress, TunnelFingerprint: tunnelFingerprint,
 			DurationMS: time.Since(startedAt).Milliseconds(),
 		}, nil
@@ -528,7 +586,9 @@ func (s *Service) runConnectionTest(ctx context.Context, request TestConnectionR
 		return ConnectionTestResult{}, err
 	}
 	message := "SSH 端口、主机指纹、身份认证、会话通道和 PTY 均测试成功"
-	if !value.UsesIsolatedTunnel() {
+	if value.EffectiveConnectionMode() == model.ConnectionModeATrustSSH {
+		message += "（通过 aTrust 进程内隔离通道）"
+	} else if !value.UsesIsolatedTunnel() {
 		message += "（直接连接）"
 	}
 	return ConnectionTestResult{
@@ -574,8 +634,14 @@ func connectProbeTunnel(ctx context.Context, transport *vpn.IsolatedManager, pro
 }
 
 func sameTunnelEndpoint(left, right model.ConnectionProfile) bool {
-	if !left.UsesIsolatedTunnel() || !right.UsesIsolatedTunnel() {
+	if !left.UsesVPN() || !right.UsesVPN() || left.EffectiveConnectionMode() != right.EffectiveConnectionMode() {
 		return false
+	}
+	if left.EffectiveConnectionMode() == model.ConnectionModeOpenVPNSSH {
+		return left.VPN.OpenVPNConfig == right.VPN.OpenVPNConfig
+	}
+	if left.EffectiveConnectionMode() == model.ConnectionModeATrustSSH {
+		return strings.EqualFold(left.VPN.ServerAddress, right.VPN.ServerAddress)
 	}
 	leftPort := left.VPN.ServerPort
 	if leftPort == 0 {
@@ -603,9 +669,11 @@ func (s *Service) ConnectAndOpenTerminal(ctx context.Context, profileID string, 
 }
 
 func (s *Service) OpenBrowserResource(ctx context.Context, profileID, targetURL string) (string, error) {
-	if _, err := s.profiles.Get(ctx, profileID); err != nil {
+	_, err := s.profiles.Get(ctx, profileID)
+	if err != nil {
 		return "", err
 	}
+
 	if err := browserproxy.ValidateTargetURL(targetURL); err != nil {
 		return "", err
 	}
@@ -925,6 +993,7 @@ func (s *Service) CloseMCPSessions(ctx context.Context) {
 }
 
 func (s *Service) Shutdown(ctx context.Context) {
+	s.closeAllConnectionTests(ctx)
 	s.browser.CloseAll(ctx)
 	s.ssh.CloseAll(ctx)
 	s.vpn.Shutdown(ctx)

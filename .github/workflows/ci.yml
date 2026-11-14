@@ -55,5 +55,9 @@ jobs:
       - name: 运行 Go 测试
         run: go test ./...
 
+      - name: 验证内嵌 OpenVPN 协议
+        working-directory: third_party/go-openvpn
+        run: go test ./internal/... ./profile ./routing
+
       - name: 运行 Go 静态检查
         run: go vet ./...

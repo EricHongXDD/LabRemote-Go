@@ -32,7 +32,7 @@ Unicode true
 ####
 ## Include the wails tools
 ####
-!include "wails_tools.nsh"
+!include /CHARSET=UTF8 "wails_tools.nsh"
 
 # The version information for this two must consist of 4 parts
 VIProductVersion "${INFO_PRODUCTVERSION}.0"
@@ -95,6 +95,8 @@ Section
     SetOutPath $INSTDIR
 
     !insertmacro wails.files
+
+    !include /CHARSET=UTF8 "licenses.nsh"
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"

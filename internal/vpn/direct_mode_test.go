@@ -15,7 +15,13 @@ import (
 	"github.com/EricHongXDD/LabRemote-Go/internal/secrets"
 )
 
-func TestDirectSSHModeDialsOnlyConfiguredTarget(t *testing.T) {
+func TestHostNetworkModesDialOnlyConfiguredTarget(t *testing.T) {
+	for _, mode := range []model.ConnectionMode{model.ConnectionModeDirectSSH} {
+		t.Run(string(mode), func(t *testing.T) { testHostNetworkTarget(t, mode) })
+	}
+}
+
+func testHostNetworkTarget(t *testing.T, mode model.ConnectionMode) {
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -24,7 +30,8 @@ func TestDirectSSHModeDialsOnlyConfiguredTarget(t *testing.T) {
 	port := uint16(listener.Addr().(*net.TCPAddr).Port)
 	repository := profile.NewJSONRepository(filepath.Join(t.TempDir(), "profiles.json"))
 	value := model.ConnectionProfile{
-		ID: "direct", DisplayName: "直接 SSH", ConnectionMode: model.ConnectionModeDirectSSH,
+		ID: "direct", DisplayName: "直接 SSH", ConnectionMode: mode,
+		VPN: model.VPNConfig{Type: model.VPNTypeATrust, ServerAddress: "https://vpn.example.com"},
 		SSH: model.SSHConfig{ServerAddress: "127.0.0.1", Port: port, Username: "user"},
 	}
 	if err := repository.Upsert(context.Background(), value); err != nil {
@@ -33,11 +40,12 @@ func TestDirectSSHModeDialsOnlyConfiguredTarget(t *testing.T) {
 	manager := NewIsolatedManager(repository, secrets.NewMemoryStore(), events.Nop{})
 	defer manager.Shutdown(context.Background())
 
+	wantState, wantRouteReady := model.VPNNotRequired, true
 	status, err := manager.Connect(context.Background(), value.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.State != model.VPNNotRequired || !status.RouteReady {
+	if status.State != wantState || status.RouteReady != wantRouteReady {
 		t.Fatalf("仅 SSH 状态异常: %#v", status)
 	}
 
@@ -73,7 +81,7 @@ func TestDirectSSHModeDialsOnlyConfiguredTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, err = manager.Status(context.Background(), value.ID)
-	if err != nil || status.State != model.VPNNotRequired || !status.RouteReady {
+	if err != nil || status.State != wantState || status.RouteReady != wantRouteReady {
 		t.Fatalf("仅 SSH 断开后仍应显示无需隧道: %#v, %v", status, err)
 	}
 }

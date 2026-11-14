@@ -15,12 +15,18 @@ import (
 )
 
 func TestSSHConnectionTestVerifiesTerminalAfterAuthentication(t *testing.T) {
-	for _, denyChannel := range []bool{false, true} {
+	for _, scenario := range []struct {
+		deny bool
+		mode model.ConnectionMode
+	}{
+		{false, model.ConnectionModeDirectSSH}, {true, model.ConnectionModeDirectSSH},
+	} {
+		denyChannel := scenario.deny
 		name := "通道允许"
 		if denyChannel {
 			name = "认证成功但通道拒绝"
 		}
-		t.Run(name, func(t *testing.T) {
+		t.Run(string(scenario.mode)+"/"+name, func(t *testing.T) {
 			_, key, err := ed25519.GenerateKey(rand.Reader)
 			if err != nil {
 				t.Fatal(err)
@@ -74,7 +80,8 @@ func TestSSHConnectionTestVerifiesTerminalAfterAuthentication(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			result, err := service.TestSSHConnection(ctx, TestConnectionRequest{Profile: model.ConnectionProfile{
-				DisplayName: "终端测试", ConnectionMode: model.ConnectionModeDirectSSH,
+				DisplayName: "终端测试", ConnectionMode: scenario.mode,
+				VPN: model.VPNConfig{Type: model.VPNTypeATrust, ServerAddress: "https://vpn.example.com"},
 				SSH: model.SSHConfig{ServerAddress: "127.0.0.1", Port: uint16(listener.Addr().(*net.TCPAddr).Port), Username: "test"},
 			}, SSHPassword: "test"})
 			if denyChannel {

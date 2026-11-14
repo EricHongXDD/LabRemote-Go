@@ -5,6 +5,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"github.com/EricHongXDD/LabRemote-Go/internal/openvpn"
 )
 
 type VPNType string
@@ -16,11 +18,15 @@ type SSHAuthMethod string
 const (
 	ConnectionModeIsolatedTunnel ConnectionMode = "isolated_tunnel"
 	ConnectionModeDirectSSH      ConnectionMode = "direct_ssh"
+	ConnectionModeOpenVPNSSH     ConnectionMode = "openvpn_ssh"
+	ConnectionModeATrustSSH      ConnectionMode = "atrust_ssh"
 	SSHAuthPassword              SSHAuthMethod  = "password"
 	SSHAuthPrivateKey            SSHAuthMethod  = "private_key"
 
 	VPNTypeL2TPPSK   VPNType = "l2tp_psk"
 	VPNTypeSoftEther VPNType = "softether"
+	VPNTypeOpenVPN   VPNType = "openvpn"
+	VPNTypeATrust    VPNType = "atrust"
 	VPNTypePPTP      VPNType = "pptp"
 	VPNTypeSSTP      VPNType = "sstp"
 	VPNTypeIKEv2     VPNType = "ikev2"
@@ -39,6 +45,7 @@ type ConnectionProfile struct {
 }
 
 type VPNConfig struct {
+	OpenVPNConfig     string  `json:"openvpn_config,omitempty"`
 	ConnectionName    string  `json:"connection_name"`
 	ServerAddress     string  `json:"server_address"`
 	ServerPort        uint16  `json:"server_port,omitempty"`
@@ -73,7 +80,7 @@ func (p ConnectionProfile) Validate() error {
 		return NewAppError("PROFILE_INVALID", "连接名称必须为 1-64 个字符", "profile", false)
 	}
 	mode := p.EffectiveConnectionMode()
-	if mode != ConnectionModeIsolatedTunnel && mode != ConnectionModeDirectSSH {
+	if mode != ConnectionModeIsolatedTunnel && mode != ConnectionModeDirectSSH && mode != ConnectionModeOpenVPNSSH && mode != ConnectionModeATrustSSH {
 		return NewAppError("PROFILE_INVALID", "连接方式无效", "profile", false)
 	}
 	if mode == ConnectionModeIsolatedTunnel {
@@ -91,6 +98,24 @@ func (p ConnectionProfile) Validate() error {
 		}
 		if !p.VPN.SplitTunnel {
 			return NewAppError("PROFILE_INVALID", "必须启用仅限目标连接的隔离传输", "profile", false)
+		}
+	}
+	if mode == ConnectionModeOpenVPNSSH {
+		if p.VPN.Type != VPNTypeOpenVPN || strings.TrimSpace(p.VPN.Username) == "" {
+			return NewAppError("PROFILE_INVALID", "OpenVPN 需要 VPN 登录账号", "profile", false)
+		}
+	}
+	if mode == ConnectionModeATrustSSH {
+		if p.VPN.Type != VPNTypeATrust {
+			return NewAppError("PROFILE_INVALID", "aTrust 连接类型无效", "profile", false)
+		}
+		if _, err := NormalizeATrustAddress(p.VPN.ServerAddress); err != nil {
+			return err
+		}
+	}
+	if (p.VPN.OpenVPNConfig != "" && mode != ConnectionModeATrustSSH) || mode == ConnectionModeOpenVPNSSH {
+		if err := openvpn.Validate(p.VPN.OpenVPNConfig); err != nil {
+			return NewAppError("PROFILE_INVALID", err.Error(), "profile", false)
 		}
 	}
 	if !validHost(p.SSH.ServerAddress) {
@@ -125,9 +150,18 @@ func (p ConnectionProfile) EffectiveConnectionMode() ConnectionMode {
 	return p.ConnectionMode
 }
 
-func (p ConnectionProfile) UsesIsolatedTunnel() bool {
-	// 只有明确选择 direct_ssh 才绕过隧道，未知值必须按更保守的隧道路径处理并由 Validate 拒绝。
+func (p ConnectionProfile) UsesVPN() bool {
 	return p.EffectiveConnectionMode() != ConnectionModeDirectSSH
+}
+
+func (p ConnectionProfile) UsesIsolatedTunnel() bool {
+	// aTrust 仅使用进程内目标 TCP 通道；未知方式仍由 Validate 拒绝，禁止直连回退。
+	return p.UsesVPN()
+}
+
+// NeedsVPNCredentials 表示由本应用处理账号密码的 VPN；aTrust 使用独立网页登录。
+func (p ConnectionProfile) NeedsVPNCredentials() bool {
+	return p.UsesIsolatedTunnel() && p.EffectiveConnectionMode() != ConnectionModeATrustSSH
 }
 
 func validHost(value string) bool {

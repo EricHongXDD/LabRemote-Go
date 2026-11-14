@@ -151,7 +151,7 @@ type downloadJobInput struct {
 func addTools(server *mcp.Server, controller *Controller) {
 	mcp.AddTool(server, &mcp.Tool{Name: "profiles_list", Description: "列出明确授权给 MCP 使用的 LabRemote 连接配置"}, controller.profilesList)
 	mcp.AddTool(server, &mcp.Tool{Name: "connection_status", Description: "查询一个已授权配置的连接方式、隔离隧道、SSH 和活动会话状态"}, controller.connectionStatus)
-	mcp.AddTool(server, &mcp.Tool{Name: "vpn_connect", Description: "兼容名称：按配置建立隔离隧道加 SSH，或仅建立直接 SSH 连接"}, controller.vpnConnect)
+	mcp.AddTool(server, &mcp.Tool{Name: "vpn_connect", Description: "兼容名称：按配置建立进程内 SoftEther/OpenVPN 隔离隧道加 SSH，或直接 SSH；OpenVPN 验证码在桌面输入"}, controller.vpnConnect)
 	mcp.AddTool(server, &mcp.Tool{Name: "vpn_disconnect", Description: "兼容名称：断开 SSH 与可选隔离隧道；图形终端存在时始终拒绝"}, controller.vpnDisconnect)
 	mcp.AddTool(server, &mcp.Tool{Name: "ssh_exec", Description: "在已授权的 SSH 服务器执行一条非交互命令"}, controller.sshExec)
 	mcp.AddTool(server, &mcp.Tool{Name: "ssh_session_open", Description: "打开 MCP 专属的交互式 SSH PTY 会话"}, controller.sessionOpen)

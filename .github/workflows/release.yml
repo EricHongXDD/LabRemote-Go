@@ -9,7 +9,7 @@ on:
       tag:
         description: "要创建或更新的版本标签，必须与 wails.json 一致"
         required: true
-        default: "v1.5.9"
+        default: "v1.6.0"
         type: string
       publish:
         description: "发布到 GitHub Releases；关闭时仅生成 Actions Artifact"
@@ -169,6 +169,7 @@ jobs:
           mkdir -p "$package_root"
           install -m 0755 build/bin/LabRemote "$package_root/LabRemote"
           install -m 0644 README.md LICENSE "$package_root/"
+          python3 scripts/package_licenses.py --output "$package_root/licenses"
           tar -czf build/bin/LabRemote-linux-amd64.tar.gz -C build/package LabRemote
           test -s build/bin/LabRemote-linux-amd64.tar.gz
 
@@ -223,7 +224,11 @@ jobs:
           echo "macOS architectures: $architectures"
           grep -q "x86_64" <<< "$architectures"
           grep -q "arm64" <<< "$architectures"
-          ditto -c -k --sequesterRsrc --keepParent build/bin/LabRemote.app build/bin/LabRemote-macos-universal.zip
+          package_root="build/package/LabRemote-macos"
+          mkdir -p "$package_root"
+          ditto build/bin/LabRemote.app "$package_root/LabRemote.app"
+          python3 scripts/package_licenses.py --output "$package_root/licenses"
+          ditto -c -k --sequesterRsrc "$package_root" build/bin/LabRemote-macos-universal.zip
           test -s build/bin/LabRemote-macos-universal.zip
 
       - name: 上传 macOS 产物
@@ -249,11 +254,17 @@ jobs:
       contents: write
 
     steps:
+      - name: 检出发行说明与许可
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: 下载全部平台产物
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: release-assets
           merge-multiple: true
+
+      - name: 打包第三方许可与重新构建说明
+        run: python3 scripts/package_licenses.py --output build/licenses --archive release-assets/LabRemote-third-party-licenses.zip
 
       - name: 生成统一 SHA-256 清单
         shell: bash
@@ -261,8 +272,8 @@ jobs:
           set -euo pipefail
           cd release-assets
           mapfile -t assets < <(find . -maxdepth 1 -type f -name 'LabRemote-*' -printf '%f\n' | sort)
-          if [[ "${#assets[@]}" -ne 4 ]]; then
-            printf '预期 4 个发行文件，实际为 %s：\n' "${#assets[@]}" >&2
+          if [[ "${#assets[@]}" -ne 5 ]]; then
+            printf '预期 5 个发行文件，实际为 %s：\n' "${#assets[@]}" >&2
             printf '%s\n' "${assets[@]}" >&2
             exit 1
           fi
@@ -289,6 +300,10 @@ jobs:
             fi
           fi
           mapfile -t assets < <(find release-assets -maxdepth 1 -type f -printf '%p\n' | sort)
+          notes_args=(--generate-notes)
+          if [[ -f "docs/releases/$RELEASE_TAG.md" ]]; then
+            notes_args=(--notes-file "docs/releases/$RELEASE_TAG.md")
+          fi
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
             gh release edit "$RELEASE_TAG" --title "LabRemote $RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
@@ -296,7 +311,7 @@ jobs:
             gh release create "$RELEASE_TAG" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --generate-notes \
+              "${notes_args[@]}" \
               --title "LabRemote $RELEASE_TAG"
           fi
 

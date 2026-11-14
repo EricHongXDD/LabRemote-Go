@@ -7,7 +7,7 @@ export type MCPPolicy = {
   allow_disconnect: boolean
 }
 
-export type ConnectionMode = 'isolated_tunnel' | 'direct_ssh'
+export type ConnectionMode = 'isolated_tunnel' | 'direct_ssh' | 'openvpn_ssh' | 'atrust_ssh'
 export type SSHAuthMethod = 'password' | 'private_key'
 
 export type ConnectionProfile = {
@@ -16,6 +16,7 @@ export type ConnectionProfile = {
   group?: string
   connection_mode?: ConnectionMode
   vpn: {
+    openvpn_config?: string
     connection_name: string
     server_address: string
     server_port?: number
@@ -50,6 +51,7 @@ export type SaveProfileRequest = {
 }
 
 export type TestConnectionRequest = {
+	 test_session_id?: string
   profile: ConnectionProfile
   vpn_password: string
   ssh_password: string
