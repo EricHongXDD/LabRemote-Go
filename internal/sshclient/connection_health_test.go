@@ -451,6 +451,67 @@ type failedProbeConn struct {
 	probes atomic.Int32
 }
 
+// delayedProbeConn 模拟网络短暂延迟，保活最终仍能获得正常回复。
+type delayedProbeConn struct {
+	ssh.Conn
+	allow   chan struct{}
+	entered chan struct{}
+	probes  atomic.Int32
+}
+
+func (c *delayedProbeConn) SendRequest(name string, wantReply bool, payload []byte) (bool, []byte, error) {
+	if c.probes.Add(1) == 1 {
+		close(c.entered)
+	}
+	<-c.allow
+	return c.Conn.SendRequest(name, wantReply, payload)
+}
+
+func TestCancelledMCPProbePreservesSharedSSHAndCoalescesWaiters(t *testing.T) {
+	manager, id, _ := healthTestManager(t, "wait")
+	if err := manager.Connect(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	runtime := manager.runtime(id)
+	runtime.mu.Lock()
+	delayed := &delayedProbeConn{Conn: runtime.client.Conn, allow: make(chan struct{}), entered: make(chan struct{})}
+	shared := &ssh.Client{Conn: delayed}
+	runtime.client = shared
+	runtime.mu.Unlock()
+	defer func() {
+		select {
+		case <-delayed.allow:
+		default:
+			close(delayed.allow)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	if err := manager.Connect(ctx, id); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("短请求取消结果错误: %v", err)
+	}
+	if !manager.IsConnected(id) {
+		t.Fatal("取消单个 MCP 请求关闭了共享 SSH")
+	}
+	resumed := make(chan error, 1)
+	go func() { resumed <- manager.Connect(context.Background(), id) }()
+	close(delayed.allow)
+	select {
+	case err := <-resumed:
+		if err != nil {
+			t.Fatalf("后续请求未复用健康连接: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("保活恢复后仍无法连接")
+	}
+	runtime.mu.Lock()
+	current := runtime.client
+	runtime.mu.Unlock()
+	if current != shared || delayed.probes.Load() > 2 {
+		t.Fatal("取消等待导致重复连接或重复保活")
+	}
+}
+
 func (c *failedProbeConn) SendRequest(string, bool, []byte) (bool, []byte, error) {
 	c.probes.Add(1)
 	return false, nil, io.EOF

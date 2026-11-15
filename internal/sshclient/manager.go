@@ -27,6 +27,7 @@ type profileRuntime struct {
 	generation     uint64
 	client         *ssh.Client
 	activeCommands atomic.Int32
+	probe          *clientProbe
 }
 
 type Dialer interface {
@@ -115,6 +116,9 @@ func (m *Manager) Connect(ctx context.Context, profileID string) error {
 				return nil
 			}
 		} else {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			m.invalidateClientIf(profileID, cached)
 		}
 		if err := ctx.Err(); err != nil {

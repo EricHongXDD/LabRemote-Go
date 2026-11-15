@@ -9,11 +9,18 @@ import (
 	"github.com/EricHongXDD/LabRemote-Go/internal/atrust"
 	protocol "github.com/EricHongXDD/LabRemote-Go/internal/atrust/protocol"
 	"github.com/EricHongXDD/LabRemote-Go/internal/model"
+	"github.com/EricHongXDD/LabRemote-Go/internal/secrets"
 	"github.com/EricHongXDD/LabRemote-Go/internal/softether"
 )
 
 func (m *IsolatedManager) ATrustAuthBroker() *atrust.AuthBroker     { return m.aTrustAuth }
 func (m *IsolatedManager) SetATrustAuthBroker(b *atrust.AuthBroker) { m.aTrustAuth = b }
+
+// SetATrustCredentials 让临时测试配置复用正式配置的安全票据，SSH 密码仍只存于临时内存。
+// 必须在 Connect 之前设置。
+func (m *IsolatedManager) SetATrustCredentials(store secrets.Store, scope string) {
+	m.aTrustCredentials, m.aTrustCredentialScope = store, scope
+}
 
 func (m *IsolatedManager) connectATrust(ctx context.Context, value model.ConnectionProfile) (model.VPNStatus, error) {
 	if err := value.Validate(); err != nil {
@@ -29,23 +36,40 @@ func (m *IsolatedManager) connectATrust(ctx context.Context, value model.Connect
 		return model.VPNStatus{}, ctx.Err()
 	}
 	r.mu.Lock()
-	if r.aTrust != nil {
-		select {
-		case <-r.aTrust.Done():
-			r.aTrust = nil
-		default:
-			r.aTrust.SetCertificatePin(value.VPN.ServerCertificate)
-			r.mu.Unlock()
-			return m.states.Get(value.ID), nil
-		}
-	}
+	existing := r.aTrust
 	generation := r.generation
 	connectCtx, stop := context.WithCancel(ctx)
 	r.aTrustCancel = stop
 	r.mu.Unlock()
 	defer stop()
+	if existing != nil {
+		existing.SetCertificatePin(value.VPN.ServerCertificate)
+		err := existing.Refresh(connectCtx)
+		if err == nil {
+			r.mu.Lock()
+			unchanged := generation == r.generation && connectCtx.Err() == nil
+			r.mu.Unlock()
+			if !unchanged {
+				return model.VPNStatus{}, context.Canceled
+			}
+			return m.states.Get(value.ID), nil
+		}
+		if !errors.Is(err, protocol.ErrNoSession) && !errors.Is(err, net.ErrClosed) {
+			return m.states.Get(value.ID), model.NewAppError("ATRUST_SESSION_CHECK_FAILED", "aTrust 会话复核暂时失败，已保留登录票据，请检查网络后重试", "atrust_auth", true)
+		}
+		_ = existing.Close()
+		r.mu.Lock()
+		if r.aTrust == existing {
+			r.aTrust = nil
+		}
+		r.mu.Unlock()
+	}
 	m.states.Set(value.ID, model.VPNDialing, "")
-	session, err := atrust.Open(connectCtx, atrust.Config{Server: value.VPN.ServerAddress, ProfileID: value.ID, ProfileName: value.DisplayName, CertificatePin: value.VPN.ServerCertificate, Auth: m.aTrustAuth})
+	scope := m.aTrustCredentialScope
+	if scope == "" {
+		scope = value.ID
+	}
+	session, err := atrust.Open(connectCtx, atrust.Config{Server: value.VPN.ServerAddress, ProfileID: value.ID, ProfileName: value.DisplayName, CertificatePin: value.VPN.ServerCertificate, Auth: m.aTrustAuth, Credentials: m.aTrustCredentials, CredentialScope: scope})
 	if err != nil {
 		m.states.Set(value.ID, model.VPNFailed, "ATRUST_AUTH_FAILED")
 		return m.states.Get(value.ID), model.NewAppError("ATRUST_AUTH_FAILED", err.Error(), "atrust_auth", true)

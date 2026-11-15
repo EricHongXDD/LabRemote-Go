@@ -30,19 +30,21 @@ type isolatedRuntime struct {
 }
 
 type IsolatedManager struct {
-	repository profile.Repository
-	secrets    secrets.Store
-	states     *StateMachine
-	mu         sync.Mutex
-	runtimes   map[string]*isolatedRuntime
-	pending    map[string]string
-	otp        *openvpn.OTPBroker
-	aTrustAuth *atrust.AuthBroker
+	repository            profile.Repository
+	secrets               secrets.Store
+	states                *StateMachine
+	mu                    sync.Mutex
+	runtimes              map[string]*isolatedRuntime
+	pending               map[string]string
+	otp                   *openvpn.OTPBroker
+	aTrustAuth            *atrust.AuthBroker
+	aTrustCredentials     secrets.Store
+	aTrustCredentialScope string
 }
 
 func NewIsolatedManager(repository profile.Repository, secretStore secrets.Store, sink events.Sink) *IsolatedManager {
 	return &IsolatedManager{
-		repository: repository, secrets: secretStore, states: NewStateMachine(sink),
+		repository: repository, secrets: secretStore, aTrustCredentials: secretStore, states: NewStateMachine(sink),
 		runtimes: make(map[string]*isolatedRuntime), pending: make(map[string]string), otp: openvpn.NewOTPBroker(sink), aTrustAuth: atrust.NewAuthBroker(sink),
 	}
 }

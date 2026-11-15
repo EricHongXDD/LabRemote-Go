@@ -151,9 +151,9 @@ func (c *Client) completeSSOChecks(ctx context.Context) error {
 		if err != nil {
 			var api *APIError
 			if errors.As(err, &api) {
-				return fmt.Errorf("aTrust 会话复核被拒绝（%s，业务码 %d）：%s", service, api.Code, safeGatewayMessage(api.Message))
+				return fmt.Errorf("aTrust 会话复核被拒绝（业务码 %d）：%w", api.Code, &APIError{Code: api.Code, Path: service, Message: safeGatewayMessage(api.Message)})
 			}
-			return fmt.Errorf("aTrust 会话复核接口失败（%s），未建立目标通道", service)
+			return fmt.Errorf("aTrust 会话复核接口失败（%s），未建立目标通道：%w", service, err)
 		}
 		service = check.NextService
 		if service == "" && len(check.NextServiceList) > 0 {
@@ -165,9 +165,9 @@ func (c *Client) completeSSOChecks(ctx context.Context) error {
 		case "auth/authCheck", "auth/accessCheck":
 			continue
 		case "auth/sms", "auth/customSms", "auth/otp", "auth/totp":
-			return fmt.Errorf("aTrust 网关要求额外认证（%s），当前版本尚未完成该步骤", service)
+			return fmt.Errorf("aTrust 网关要求额外认证（%s）：%w", service, ErrMultiFactorRequired)
 		default:
-			return fmt.Errorf("aTrust 网关要求尚未支持的额外认证或终端准入，未建立目标通道")
+			return fmt.Errorf("aTrust 网关要求尚未支持的额外认证或终端准入：%w", ErrMultiFactorRequired)
 		}
 	}
 	return fmt.Errorf("aTrust 会话复核步骤过多，已停止连接")

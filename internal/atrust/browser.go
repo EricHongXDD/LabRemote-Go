@@ -63,9 +63,10 @@ func browserCallback(ctx context.Context, loginURL, callbackURL string) (string,
 	defer os.RemoveAll(directory)
 	browserContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	command := exec.CommandContext(browserContext, executable, "--user-data-dir="+directory, "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check", "--no-startup-window")
-	if command.Start() != nil {
-		return "", fmt.Errorf("无法启动独立认证窗口")
+	// 先显示独立空白窗口，再启用回调拦截并导航，避免后台启动时窗口始终不可见。
+	command := exec.CommandContext(browserContext, executable, "--user-data-dir="+directory, "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check", "--new-window", "about:blank")
+	if err := command.Start(); err != nil {
+		return "", fmt.Errorf("无法启动独立认证窗口：%w", err)
 	}
 	processDone := make(chan struct{})
 	go func() { _ = command.Wait(); close(processDone) }()
@@ -128,9 +129,6 @@ ready:
 	if send("Target.setAutoAttach", "", map[string]any{"autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true}) != nil {
 		return "", fmt.Errorf("无法初始化认证窗口")
 	}
-	if send("Target.createTarget", "", map[string]any{"url": "about:blank", "newWindow": true}) != nil {
-		return "", fmt.Errorf("无法打开认证页面")
-	}
 	var targetSession string
 	stage := "等待认证页面"
 	for {
@@ -170,6 +168,7 @@ ready:
 			}
 			_ = send("Runtime.runIfWaitingForDebugger", targetSession, map[string]any{})
 			_ = send("Page.navigate", targetSession, map[string]any{"url": loginURL})
+			_ = send("Page.bringToFront", targetSession, map[string]any{})
 			stage = "等待网页回调"
 		case "Fetch.requestPaused":
 			var event struct {

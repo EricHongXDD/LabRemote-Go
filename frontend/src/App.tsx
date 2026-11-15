@@ -1,7 +1,6 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
 import {
   ImportOpenVPNConfig,
-  OpenATrustAuthWindow,
   CancelATrustLogin,
   SubmitOpenVPNOTP,
   AcceptHostKey,
@@ -448,10 +447,10 @@ export default function App() {
     } catch (error) { setNotice(parseAppError(error).message) }
   }
 
-  const clearSecret = async (profileID: string, kind: 'vpn_psk' | 'vpn_password' | 'ssh_password' | 'ssh_private_key') => {
+  const clearSecret = async (profileID: string, kind: 'vpn_psk' | 'vpn_password' | 'ssh_password' | 'ssh_private_key' | 'atrust_session') => {
     if (!await confirmAction({
-      title: kind === 'ssh_private_key' ? '清除已保存的 SSH 私钥' : '清除已保存的密码',
-      message: '清除后，下次连接前必须重新选择或输入凭据并保存。',
+      title: kind === 'atrust_session' ? '清除 aTrust 登录状态' : (kind === 'ssh_private_key' ? '清除已保存的 SSH 私钥' : '清除已保存的密码'),
+      message: kind === 'atrust_session' ? '将断开此配置的连接并删除本机登录票据，下次连接需要重新完成网页登录。' : '清除后，下次连接前必须重新选择或输入凭据并保存。',
       confirmLabel: '清除凭据',
       danger: true,
     })) return
@@ -578,7 +577,7 @@ export default function App() {
         <span className={`mcp-status ${mcp.enabled ? 'enabled' : ''}`}>MCP {mcp.enabled ? `127.0.0.1:${mcp.port}` : '已关闭'}</span>
       </footer>
 
-      {aTrustChallenges[0] && <ATrustLoginDialog key={aTrustChallenges[0].id} challenge={aTrustChallenges[0]} onOpen={OpenATrustAuthWindow} onCancel={CancelATrustLogin} />}
+      {aTrustChallenges[0] && <ATrustLoginDialog key={aTrustChallenges[0].id} challenge={aTrustChallenges[0]} onCancel={CancelATrustLogin} />}
       {dialogOpen && <ProfileDialog value={editing} copySourceProfileID={copySourceProfileID} onCancel={closeProfileDialog} onSave={save} onTestTunnel={testTunnel} onTestSSH={testSSH} onCloseTestSession={CloseConnectionTestSession} onImportOpenVPNConfig={ImportOpenVPNConfig} onSelectSSHPrivateKey={SelectSSHPrivateKey} onClearSecret={clearSecret} />}
 		{bundleDialog && <ConnectionBundleDialog
 			profiles={profiles}

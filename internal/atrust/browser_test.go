@@ -7,6 +7,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/EricHongXDD/LabRemote-Go/internal/events"
 )
 
 func TestIndependentBrowserCallback(t *testing.T) {
@@ -18,7 +20,9 @@ func TestIndependentBrowserCallback(t *testing.T) {
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	got, err := browserCallback(ctx, server.URL, "https://gateway.example/passport/v1/auth/httpsOauth2")
+	// 不注册任何前端监听器，仍应自动打开真实浏览器并收到本次回调。
+	broker := NewAuthBroker(events.Nop{})
+	got, err := broker.Request(ctx, LoginChallenge{Server: "https://gateway.example", ProfileName: "本机回调测试"}, server.URL, "https://gateway.example/passport/v1/auth/httpsOauth2")
 	if err != nil || got != callback {
 		t.Fatalf("独立认证窗口回调失败: %s %v", got, err)
 	}

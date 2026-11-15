@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/EricHongXDD/LabRemote-Go/internal/atrust"
 	"github.com/EricHongXDD/LabRemote-Go/internal/browserproxy"
 	"github.com/EricHongXDD/LabRemote-Go/internal/events"
 	"github.com/EricHongXDD/LabRemote-Go/internal/model"
@@ -20,6 +21,7 @@ import (
 )
 
 type SaveProfileRequest struct {
+	TestSessionID           string                  `json:"test_session_id,omitempty"`
 	Profile                 model.ConnectionProfile `json:"profile"`
 	CopyFromProfileID       string                  `json:"copy_from_profile_id,omitempty"`
 	VPNPreSharedKey         string                  `json:"vpn_pre_shared_key"`
@@ -254,6 +256,16 @@ func (s *Service) SaveProfile(ctx context.Context, request SaveProfileRequest) (
 			copiedKnownHost = true
 		}
 	}
+	if value.EffectiveConnectionMode() == model.ConnectionModeATrustSSH {
+		if err := s.adoptATrustTestCredential(ctx, request.TestSessionID, value); err != nil {
+			return model.ConnectionProfile{}, err
+		}
+	}
+	if !isNew && previous.EffectiveConnectionMode() == model.ConnectionModeATrustSSH && (value.EffectiveConnectionMode() != model.ConnectionModeATrustSSH || !sameTunnelEndpoint(previous, value)) {
+		if err := s.forgetATrustCredential(ctx, previous); err != nil {
+			return model.ConnectionProfile{}, err
+		}
+	}
 	if err := s.profiles.Upsert(ctx, value); err != nil {
 		if copiedKnownHost {
 			_ = s.knownHosts.Remove(value.ID)
@@ -310,6 +322,15 @@ func (s *Service) resolvePrivateKeyCredential(ctx context.Context, profileID, pr
 }
 
 func (s *Service) DeleteProfile(ctx context.Context, profileID string, deleteSecrets bool) error {
+	value, err := s.profiles.Get(ctx, profileID)
+	if err != nil {
+		return err
+	}
+	if value.EffectiveConnectionMode() == model.ConnectionModeATrustSSH {
+		if err := s.forgetATrustCredential(ctx, value); err != nil {
+			return err
+		}
+	}
 	s.browser.CloseProfile(ctx, profileID)
 	s.ssh.CloseProfile(ctx, profileID)
 	_ = s.vpn.Disconnect(ctx, profileID, true)
@@ -330,11 +351,14 @@ func (s *Service) DeleteProfile(ctx context.Context, profileID string, deleteSec
 }
 
 func (s *Service) ClearCredential(ctx context.Context, profileID, kind string) error {
-	if _, err := s.profiles.Get(ctx, profileID); err != nil {
+	value, err := s.profiles.Get(ctx, profileID)
+	if err != nil {
 		return err
 	}
 	var keys []string
 	switch kind {
+	case "atrust_session":
+		return s.forgetATrustCredential(ctx, value)
 	case "vpn_psk":
 		keys = []string{model.VPNPSKKey(profileID)}
 	case "vpn_password":
@@ -458,8 +482,21 @@ func (s *Service) runConnectionTest(ctx context.Context, request TestConnectionR
 	defer entry.clearSSHSecrets()
 	transport := entry.transport
 	if value.EffectiveConnectionMode() == model.ConnectionModeATrustSSH {
+		previousScope := entry.aTrustScope
+		entry.aTrustScope = ""
+		if hasSavedProfile && savedProfile.EffectiveConnectionMode() == model.ConnectionModeATrustSSH && sameTunnelEndpoint(savedProfile, value) {
+			entry.aTrustScope = originalProfileID
+		}
+		if entry.aTrustScope == "" {
+			entry.aTrustScope = entry.id
+			entry.aTrustStore = s.secrets
+			if entry.aTrustDraftKeys == nil {
+				entry.aTrustDraftKeys = make(map[string]struct{})
+			}
+			entry.aTrustDraftKeys[atrust.CredentialKey(entry.aTrustScope, value.VPN.ServerAddress)] = struct{}{}
+		}
 		signature := tunnelTestSignature(value, nil)
-		if signature != entry.signature {
+		if signature != entry.signature || previousScope != entry.aTrustScope {
 			entry.transport.Shutdown(context.Background())
 			entry.transport = s.newTestTransport(entry)
 			transport = entry.transport
