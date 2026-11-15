@@ -14,7 +14,7 @@ type Props = {
   onCloseTestSession: (sessionID: string) => Promise<void>
   onImportOpenVPNConfig: () => Promise<string>
   onSelectSSHPrivateKey: () => Promise<string>
-  onClearSecret: (profileId: string, kind: 'vpn_psk' | 'vpn_password' | 'ssh_password' | 'ssh_private_key') => Promise<void>
+  onClearSecret: (profileId: string, kind: 'vpn_psk' | 'vpn_password' | 'ssh_password' | 'ssh_private_key' | 'atrust_session') => Promise<void>
 }
 
 type TestKind = 'tunnel' | 'ssh'
@@ -197,6 +197,7 @@ export default function ProfileDialog({value, copySourceProfileID, onCancel, onS
     setSaving(true)
     try {
       await onSave({
+		test_session_id: testSessionID.current,
         profile: normalized,
         copy_from_profile_id: copySourceProfileID,
         vpn_pre_shared_key: '',
@@ -263,11 +264,12 @@ export default function ProfileDialog({value, copySourceProfileID, onCancel, onS
             <legend><span>01</span> aTrust VPN</legend>
             <label>服务器地址<input value={profile.vpn.server_address} placeholder="https://vpn.example.com" onChange={event => updateVPN('server_address', event.target.value)} spellCheck={false} /></label>
             <div className="atrust-login-steps">
-              <p><b>1</b>点击认证或测试 SSH，按提示打开独立认证窗口。</p>
+              <p><b>1</b>点击认证或测试 SSH，优先恢复有效会话，需要登录时自动打开独立浏览器窗口。</p>
               <p><b>2</b>在服务提供方页面手动完成登录及验证码认证。</p>
-              <p><b>3</b>认证完成后仅连接右侧 SSH 目标，后续测试复用会话。</p>
+              <p><b>3</b>登录票据保存在系统凭据库，重启后仍可恢复；过期或服务端要求验证时重新登录。</p>
             </div>
             <div className="connection-test-row"><button type="button" className="test-connection-button" disabled={saving || Boolean(testing)} onClick={() => void testConnection('tunnel')}>{testing === 'tunnel' ? '正在认证…' : '认证 aTrust'}</button>{renderFeedback('tunnel')}</div>
+            {isExisting && value && <button type="button" className="clear-secret" disabled={saving || Boolean(testing)} onClick={() => void onClearSecret(value.id, 'atrust_session')}>清除 aTrust 登录状态</button>}
             <p className="form-note">协议适配正在验收。使用应用进程内的目标 TCP 通道，不启动 aTrust 客户端、不创建系统 VPN、路由或代理。网页访问与文件传输均沿用 SSH；通道不可用时不会系统直连。</p>
           </fieldset>}
 

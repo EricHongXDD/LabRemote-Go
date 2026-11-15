@@ -41,6 +41,7 @@ export type ConnectionProfile = {
 }
 
 export type SaveProfileRequest = {
+	 test_session_id?: string
   profile: ConnectionProfile
   copy_from_profile_id: string
   vpn_pre_shared_key: string

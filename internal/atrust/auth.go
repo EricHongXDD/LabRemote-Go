@@ -67,21 +67,27 @@ func (b *AuthBroker) Request(ctx context.Context, challenge LoginChallenge, logi
 		b.events.Emit("atrust:login-closed", map[string]string{"id": challenge.ID})
 	}()
 	b.events.Emit("atrust:login", challenge)
+	// 发起认证即打开独立浏览器，不能依赖前端再收到事件并点击第二个按钮。
+	go func() { _ = b.Open(challenge.ID) }()
 	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
+	case <-requestCtx.Done():
+		return "", requestCtx.Err()
 	case answer := <-entry.result:
 		return answer.callback, answer.err
 	}
 }
 
-// Open 由用户点击后打开独立认证浏览器；只监听本次网关回调。
+// Open 只打开当前请求的独立浏览器；重复调用不能再次启动或打断认证。
 func (b *AuthBroker) Open(id string) error {
 	b.mu.Lock()
 	entry := b.pending[id]
-	if entry == nil || entry.started {
+	if entry == nil {
 		b.mu.Unlock()
-		return fmt.Errorf("认证请求已结束或认证窗口已打开")
+		return fmt.Errorf("认证请求已结束，请重新发起连接")
+	}
+	if entry.started {
+		b.mu.Unlock()
+		return nil
 	}
 	entry.started = true
 	b.mu.Unlock()

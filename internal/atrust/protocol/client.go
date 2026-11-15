@@ -57,6 +57,16 @@ type APIError struct {
 	Path    string
 }
 
+// HTTPStatusError 只保留状态码和固定接口路径，响应正文不进入错误日志。
+type HTTPStatusError struct {
+	StatusCode int
+	Path       string
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("aTrust: %s 返回 HTTP %d，响应正文已隐藏", e.Path, e.StatusCode)
+}
+
 func (e *APIError) Error() string {
 	return fmt.Sprintf("aTrust %s 返回 %d: %s", e.Path, e.Code, e.Message)
 }
@@ -300,8 +310,7 @@ func (c *Client) do(ctx context.Context, spec requestSpec) ([]byte, error) {
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("aTrust: %s 返回 HTTP %d: %s",
-			spec.path, resp.StatusCode, "响应正文已隐藏")
+		return nil, &HTTPStatusError{StatusCode: resp.StatusCode, Path: spec.path}
 	}
 	return raw, nil
 }

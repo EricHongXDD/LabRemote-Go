@@ -41,6 +41,7 @@ export namespace app {
 	    }
 	}
 	export class SaveProfileRequest {
+	    test_session_id?: string;
 	    profile: model.ConnectionProfile;
 	    copy_from_profile_id?: string;
 	    vpn_pre_shared_key: string;
@@ -55,6 +56,7 @@ export namespace app {
 
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.test_session_id = source["test_session_id"];
 	        this.profile = this.convertValues(source["profile"], model.ConnectionProfile);
 	        this.copy_from_profile_id = source["copy_from_profile_id"];
 	        this.vpn_pre_shared_key = source["vpn_pre_shared_key"];

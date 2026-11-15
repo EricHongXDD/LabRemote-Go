@@ -103,14 +103,55 @@ func (m *Manager) newSession(ctx context.Context, profileID string, client *ssh.
 	return session, nil
 }
 
+type clientProbe struct {
+	client *ssh.Client
+	done   chan struct{}
+	err    error
+}
+
 func (m *Manager) probeClient(ctx context.Context, profileID string, client *ssh.Client) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	return m.sessionRequest(ctx, profileID, client, func() error {
-		// 请求回复才能证明远端仍可响应；服务端不支持时返回 false 也表示链路正常。
-		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+	if err := ctx.Err(); err != nil {
 		return err
-	})
+	}
+	runtime := m.runtime(profileID)
+	runtime.mu.Lock()
+	probe := runtime.probe
+	if probe == nil || probe.client != client {
+		probe = &clientProbe{client: client, done: make(chan struct{})}
+		runtime.probe = probe
+		go m.runClientProbe(profileID, runtime, probe)
+	}
+	runtime.mu.Unlock()
+	// 多个 MCP 请求共用一次保活；取消某个等待者不能关闭其他请求使用的传输。
+	select {
+	case <-probe.done:
+		return probe.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *Manager) runClientProbe(profileID string, runtime *profileRuntime, probe *clientProbe) {
+	done := make(chan error, 1)
+	go func() {
+		// 服务端回复 false 也证明链路正常，只在网络失败或独立保活超时后淘汰客户端。
+		_, _, err := probe.client.SendRequest("keepalive@openssh.com", true, nil)
+		done <- err
+	}()
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	select {
+	case probe.err = <-done:
+	case <-timer.C:
+		probe.err = context.DeadlineExceeded
+		m.invalidateClientIf(profileID, probe.client)
+	}
+	runtime.mu.Lock()
+	if runtime.probe == probe {
+		runtime.probe = nil
+	}
+	runtime.mu.Unlock()
+	close(probe.done)
 }
 
 func (m *Manager) checkClientAfterSessionFailure(profileID string, client *ssh.Client) {

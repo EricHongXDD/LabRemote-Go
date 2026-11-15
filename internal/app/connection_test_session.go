@@ -23,20 +23,24 @@ import (
 const connectionTestIdleTimeout = 15 * time.Minute
 
 type connectionTestSession struct {
-	ctx            context.Context
-	cancel         context.CancelFunc
-	gate           chan struct{}
-	root           string
-	id             string
-	repository     *profile.JSONRepository
-	secrets        *secrets.MemoryStore
-	transport      *vpn.IsolatedManager
-	signature      [32]byte
-	certificatePin string
-	timer          *time.Timer
-	expiration     uint64
-	closeOnce      sync.Once
-	done           chan struct{}
+	ctx             context.Context
+	cancel          context.CancelFunc
+	gate            chan struct{}
+	root            string
+	id              string
+	repository      *profile.JSONRepository
+	secrets         *secrets.MemoryStore
+	transport       *vpn.IsolatedManager
+	signature       [32]byte
+	certificatePin  string
+	timer           *time.Timer
+	expiration      uint64
+	closeOnce       sync.Once
+	done            chan struct{}
+	aTrustScope     string
+	aTrustDraftKeys map[string]struct{}
+	aTrustStore     secrets.Store
+	ownerProfileID  string
 }
 
 func (s *Service) newConnectionTestSession() (*connectionTestSession, error) {
@@ -56,6 +60,7 @@ func (s *Service) newTestTransport(entry *connectionTestSession) *vpn.IsolatedMa
 		sink = provider.EventSink()
 	}
 	transport := vpn.NewIsolatedManager(entry.repository, entry.secrets, sink)
+	transport.SetATrustCredentials(s.secrets, entry.aTrustScope)
 	if provider, ok := s.vpn.(interface{ OTPBroker() *openvpn.OTPBroker }); ok {
 		transport.SetOTPBroker(provider.OTPBroker())
 	}
@@ -98,6 +103,7 @@ func (s *Service) acquireConnectionTestSession(ctx context.Context, request Test
 		if cache {
 			s.testSessions[key] = entry
 		}
+		entry.ownerProfileID = request.Profile.ID
 	}
 	if entry.timer != nil {
 		entry.timer.Stop()
@@ -192,6 +198,9 @@ func (entry *connectionTestSession) close() {
 			defer func() { <-entry.gate; close(entry.done) }()
 			entry.transport.Shutdown(context.Background())
 			entry.clearSSHSecrets()
+			for key := range entry.aTrustDraftKeys {
+				_ = entry.aTrustStore.Delete(context.Background(), key)
+			}
 			_ = entry.secrets.Delete(context.Background(), model.VPNPasswordKey(entry.id))
 			_ = os.RemoveAll(entry.root)
 		}()
