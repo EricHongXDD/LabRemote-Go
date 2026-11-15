@@ -32,7 +32,10 @@ func TestRememberedSessionIsValidatedAndReusedAcrossNewClients(t *testing.T) {
 		{"登录身份变化重新认证", "changed-user", 2, false},
 		{"网络故障保留票据", "unavailable", 1, true},
 		{"HTTP拒绝后重新认证", "unauthorized", 2, false},
+		{"HTTP403中的会话失效触发认证", "forbidden-session-invalid", 2, false},
+		{"HTTP403中的字符串业务码触发认证", "forbidden-session-invalid-string", 2, false},
 		{"资源权限拒绝保留票据", "forbidden", 1, true},
+		{"HTTP403中的其他业务故障保留票据", "forbidden-business", 1, true},
 		{"网关业务故障保留票据", "business-failure", 1, true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -80,6 +83,17 @@ func TestRememberedSessionIsValidatedAndReusedAcrossNewClients(t *testing.T) {
 					}
 					data = map[string]any{"isOnline": mode.Load() != "expired" && mode.Load() != "mfa" && mode.Load() != "web-expired", "username": name}
 				case "/controller/v1/user/clientResource":
+					if mode.Load() == "forbidden-session-invalid" || mode.Load() == "forbidden-session-invalid-string" || mode.Load() == "forbidden-business" {
+						w.WriteHeader(http.StatusForbidden)
+						var code any = 75500002
+						if mode.Load() == "forbidden-session-invalid-string" {
+							code = "75500002"
+						} else if mode.Load() == "forbidden-business" {
+							code = 75599999
+						}
+						_ = json.NewEncoder(w).Encode(map[string]any{"code": code, "message": "gateway refusal"})
+						return
+					}
 					if mode.Load() == "expired" || mode.Load() == "mfa" || mode.Load() == "unauthorized" {
 						w.WriteHeader(http.StatusUnauthorized)
 						return
@@ -192,5 +206,13 @@ func TestCredentialScopeAndGatewayIsolation(t *testing.T) {
 	}
 	if _, err := store.Get(ctx, CredentialKey("profile-a", saved.Server)); !errors.Is(err, secrets.ErrNotFound) {
 		t.Fatal("清除后票据仍然存在")
+	}
+}
+
+func TestSessionCheckErrorShowsSafeStatusInsteadOfGenericNetworkAdvice(t *testing.T) {
+	err := &protocol.HTTPStatusError{StatusCode: 403, Path: "/controller/v1/user/clientResource", Gateway: &protocol.APIError{Code: 75599999, Message: "secret-ticket-must-not-appear"}}
+	message := SessionCheckError(err).Error()
+	if !strings.Contains(message, "HTTP 403") || !strings.Contains(message, "75599999") || strings.Contains(message, "检查网络") || strings.Contains(message, "secret-ticket") {
+		t.Fatalf("错误提示没有正确区分权限故障或泄露详情：%s", message)
 	}
 }

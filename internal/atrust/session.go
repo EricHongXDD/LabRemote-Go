@@ -95,7 +95,7 @@ func openSession(ctx context.Context, config Config, newClient func(string, prot
 			return session, nil
 		} else if !errors.Is(err, protocol.ErrNoSession) {
 			// 网络故障不等于登录失效；保留票据，让下次连接继续尝试恢复。
-			return nil, fmt.Errorf("aTrust 会话复核暂时失败，已保留登录票据，请检查网络后重试")
+			return nil, SessionCheckError(err)
 		}
 		client.Close()
 		client, err = newClient(server, options)
@@ -145,6 +145,30 @@ func openSession(ctx context.Context, config Config, newClient func(string, prot
 	success = true
 	session.client = client
 	return session, nil
+}
+
+// SessionCheckError 区分网关拒绝与传输故障，只展示安全的状态码，不泄露原始响应或票据。
+func SessionCheckError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("aTrust 会话复核已取消或超时，已保留登录票据：%w", err)
+	}
+	var status *protocol.HTTPStatusError
+	var api *protocol.APIError
+	hasStatus, hasAPI := errors.As(err, &status), errors.As(err, &api)
+	if hasStatus {
+		codes := fmt.Sprintf("HTTP %d", status.StatusCode)
+		if hasAPI {
+			codes += fmt.Sprintf("，业务码 %d", api.Code)
+		}
+		if status.StatusCode == 403 {
+			return fmt.Errorf("aTrust 授权资源访问被拒绝（%s），已保留登录票据，请核对账号资源权限", codes)
+		}
+		return fmt.Errorf("aTrust 网关会话查询失败（%s），已保留登录票据，请稍后重试", codes)
+	}
+	if hasAPI {
+		return fmt.Errorf("aTrust 网关会话查询被拒绝（业务码 %d），已保留登录票据", api.Code)
+	}
+	return fmt.Errorf("aTrust 会话复核暂时失败，已保留登录票据，请检查网络后重试")
 }
 
 func loginFailure(err error) error {

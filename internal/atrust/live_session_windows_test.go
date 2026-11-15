@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -80,4 +81,52 @@ func TestLiveRememberedSessionValidation(t *testing.T) {
 		t.Fatal("未收到目标 SSH 握手标识")
 	}
 	t.Log("新客户端恢复、三次授权检查及新数据通道 SSH 握手成功，全程未调用登录入口")
+}
+
+// 明确预期票据已过期时，只验证是否转入认证；模拟认证入口，不打开真实登录页或改动系统票据。
+func TestLiveExpiredSessionRequestsLogin(t *testing.T) {
+	if os.Getenv("LABREMOTE_ATRUST_EXPECT_EXPIRED") != "1" {
+		t.Skip("需要显式启用已过期票据的真实网关诊断")
+	}
+	server, err := model.NormalizeATrustAddress(os.Getenv("LABREMOTE_ATRUST_SERVER"))
+	if err != nil {
+		t.Fatal("需要有效的测试网关")
+	}
+	profileID := os.Getenv("LABREMOTE_ATRUST_PROFILE_ID")
+	if profileID == "" {
+		t.Fatal("需要指定已授权配置")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	platform := secrets.NewPlatformStore()
+	key := CredentialKey(profileID, server)
+	before, err := platform.Get(ctx, key)
+	if err != nil {
+		t.Fatal("没有应用自身保存的测试票据")
+	}
+	defer secrets.Zero(before)
+	memory := secrets.NewMemoryStore()
+	if err := memory.Put(ctx, key, before); err != nil {
+		t.Fatal(err)
+	}
+	var requested atomic.Int32
+	auth := NewAuthBroker(nil)
+	stop := errors.New("已进入待用户认证阶段")
+	auth.open = func(context.Context, string, string) (string, error) {
+		requested.Add(1)
+		return "", stop
+	}
+	session, err := Open(ctx, Config{Server: server, ProfileID: profileID, Credentials: memory, Auth: auth})
+	if session != nil {
+		_ = session.Close()
+	}
+	if !errors.Is(err, stop) || requested.Load() != 1 {
+		t.Fatalf("过期票据未正确转入认证：%v", err)
+	}
+	after, err := platform.Get(ctx, key)
+	defer secrets.Zero(after)
+	if err != nil || string(before) != string(after) {
+		t.Fatal("诊断不应修改系统凭据")
+	}
+	t.Log("真实过期票据已触发一次认证，系统票据未被改动")
 }
