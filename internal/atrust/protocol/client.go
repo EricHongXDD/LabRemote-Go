@@ -57,14 +57,39 @@ type APIError struct {
 	Path    string
 }
 
-// HTTPStatusError 只保留状态码和固定接口路径，响应正文不进入错误日志。
+// HTTPStatusError 保留状态码和脱敏后的网关业务错误，不暴露完整响应正文。
 type HTTPStatusError struct {
 	StatusCode int
 	Path       string
+	Gateway    *APIError
 }
 
 func (e *HTTPStatusError) Error() string {
+	if e.Gateway != nil {
+		return fmt.Sprintf("aTrust: %s 返回 HTTP %d（业务码 %d：%s）", e.Path, e.StatusCode, e.Gateway.Code, e.Gateway.Message)
+	}
 	return fmt.Sprintf("aTrust: %s 返回 HTTP %d，响应正文已隐藏", e.Path, e.StatusCode)
+}
+
+func (e *HTTPStatusError) Unwrap() error {
+	if e.Gateway != nil {
+		return e.Gateway
+	}
+	return nil
+}
+
+func httpStatusError(status int, path string, body []byte) *HTTPStatusError {
+	err := &HTTPStatusError{StatusCode: status, Path: path}
+	var envelope struct {
+		Code    *json.Number `json:"code"`
+		Message string       `json:"message"`
+	}
+	if json.Unmarshal(body, &envelope) == nil && envelope.Code != nil {
+		if code, parseErr := envelope.Code.Int64(); parseErr == nil && code != 0 {
+			err.Gateway = &APIError{Code: int(code), Path: path, Message: safeGatewayMessage(envelope.Message)}
+		}
+	}
+	return err
 }
 
 func (e *APIError) Error() string {
@@ -310,7 +335,7 @@ func (c *Client) do(ctx context.Context, spec requestSpec) ([]byte, error) {
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &HTTPStatusError{StatusCode: resp.StatusCode, Path: spec.path}
+		return nil, httpStatusError(resp.StatusCode, spec.path, raw)
 	}
 	return raw, nil
 }

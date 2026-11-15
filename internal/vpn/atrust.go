@@ -55,7 +55,7 @@ func (m *IsolatedManager) connectATrust(ctx context.Context, value model.Connect
 			return m.states.Get(value.ID), nil
 		}
 		if !errors.Is(err, protocol.ErrNoSession) && !errors.Is(err, net.ErrClosed) {
-			return m.states.Get(value.ID), model.NewAppError("ATRUST_SESSION_CHECK_FAILED", "aTrust 会话复核暂时失败，已保留登录票据，请检查网络后重试", "atrust_auth", true)
+			return m.states.Get(value.ID), model.NewAppError("ATRUST_SESSION_CHECK_FAILED", atrust.SessionCheckError(err).Error(), "atrust_auth", true)
 		}
 		_ = existing.Close()
 		r.mu.Lock()

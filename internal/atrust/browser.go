@@ -68,8 +68,11 @@ func browserCallback(ctx context.Context, loginURL, callbackURL string) (string,
 	if err := command.Start(); err != nil {
 		return "", fmt.Errorf("无法启动独立认证窗口：%w", err)
 	}
-	processDone := make(chan struct{})
-	go func() { _ = command.Wait(); close(processDone) }()
+	processDone := make(chan error, 1)
+	go func() {
+		processDone <- command.Wait()
+		close(processDone)
+	}()
 	defer func() {
 		cancel()
 		select {
@@ -77,36 +80,9 @@ func browserCallback(ctx context.Context, loginURL, callbackURL string) (string,
 		case <-time.After(3 * time.Second):
 		}
 	}()
-	var endpoint string
-	startup := time.NewTimer(15 * time.Second)
-	defer startup.Stop()
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-ready:
-	for {
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-processDone:
-			return "", fmt.Errorf("认证窗口已关闭")
-		case <-startup.C:
-			return "", fmt.Errorf("认证窗口启动超时")
-		case <-ticker.C:
-			data, readErr := os.ReadFile(filepath.Join(directory, "DevToolsActivePort"))
-			if readErr != nil {
-				continue
-			}
-			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-			if len(lines) != 2 {
-				continue
-			}
-			port, parseErr := strconv.Atoi(strings.TrimSpace(lines[0]))
-			if parseErr != nil || port < 1 || port > 65535 || !strings.HasPrefix(strings.TrimSpace(lines[1]), "/devtools/browser/") {
-				continue
-			}
-			endpoint = "ws://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) + strings.TrimSpace(lines[1])
-			break ready
-		}
+	endpoint, err := waitBrowserEndpoint(ctx, directory, processDone, 15*time.Second)
+	if err != nil {
+		return "", err
 	}
 	connection, _, err := websocket.DefaultDialer.DialContext(ctx, endpoint, nil)
 	if err != nil {
@@ -192,6 +168,47 @@ ready:
 			html := base64.StdEncoding.EncodeToString([]byte("<!doctype html><meta charset=utf-8><title>LabRemote</title><p>认证回调已交给 LabRemote，请返回应用。</p>"))
 			_ = send("Fetch.fulfillRequest", targetSession, map[string]any{"requestId": event.ID, "responseCode": 200, "responseHeaders": []map[string]string{{"name": "Content-Type", "value": "text/html; charset=utf-8"}}, "body": html})
 			return event.Request.URL, nil
+		}
+	}
+}
+
+// waitBrowserEndpoint 以本次临时配置的调试端点为准，启动器正常退出不等于子浏览器窗口关闭。
+func waitBrowserEndpoint(ctx context.Context, directory string, processDone <-chan error, timeout time.Duration) (string, error) {
+	startup := time.NewTimer(timeout)
+	defer startup.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	launcherExited := false
+	for {
+		data, err := os.ReadFile(filepath.Join(directory, "DevToolsActivePort"))
+		if err == nil {
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			if len(lines) == 2 {
+				port, parseErr := strconv.Atoi(strings.TrimSpace(lines[0]))
+				path := strings.TrimSpace(lines[1])
+				if parseErr == nil && port >= 1 && port <= 65535 && strings.HasPrefix(path, "/devtools/browser/") {
+					return "ws://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) + path, nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case exitErr := <-processDone:
+			launcherExited, processDone = true, nil
+			if exitErr != nil {
+				var status *exec.ExitError
+				if errors.As(exitErr, &status) {
+					return "", fmt.Errorf("独立认证浏览器启动失败（退出码 %d）", status.ExitCode())
+				}
+				return "", fmt.Errorf("独立认证浏览器启动失败：%w", exitErr)
+			}
+		case <-startup.C:
+			if launcherExited {
+				return "", fmt.Errorf("浏览器启动进程已退出，但独立认证窗口未就绪，请确认 Edge 或 Chrome 可正常启动")
+			}
+			return "", fmt.Errorf("认证窗口启动超时")
+		case <-ticker.C:
 		}
 	}
 }
