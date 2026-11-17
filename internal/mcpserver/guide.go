@@ -25,7 +25,7 @@ func (c *Controller) AIGuideMarkdown(ctx context.Context) (string, error) {
 func buildAIGuideMarkdown(status Status, configuration string, profiles []model.ConnectionProfile, generatedAt time.Time) string {
 	var guide strings.Builder
 	guide.WriteString("# LabRemote AI 终端操作手册\n\n")
-	guide.WriteString("> 本文档由 LabRemote 自动生成，用于让支持 MCP 的 AI 客户端安全操作已授权的远程终端。\n")
+	guide.WriteString("> 本文档由 LabRemote 自动生成，用于让支持 MCP 的 AI 客户端安全操作已授权的远程终端、文件传输和服务器网页访问。\n")
 	guide.WriteString("> 文档内含当前 MCP Bearer Token，等同于本机访问凭据。请勿提交到 Git、工单、公开聊天或发送给无关人员。\n\n")
 	fmt.Fprintf(&guide, "- 生成时间：`%s`\n", generatedAt.Local().Format("2006-01-02 15:04:05 MST"))
 	fmt.Fprintf(&guide, "- MCP 服务：`%s`\n", markdownInline(status.Address))
@@ -40,9 +40,10 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("5. 删除/覆盖数据、安装软件、重启服务或主机、修改账号权限、网络、防火墙和安全配置前，必须向用户说明具体影响并取得明确确认。\n")
 	guide.WriteString("6. 不得输出、转述或记录本文档中的 Bearer Token；不得尝试把 MCP 暴露到公网、局域网或其他代理。\n")
 	guide.WriteString("7. 交互会话完成后必须调用 `ssh_session_close`；不要遗留后台 PTY 占用会话配额。\n")
-	guide.WriteString("8. 除非用户明确要求，不调用 `vpn_disconnect`；存在图形终端时 MCP 无权断开连接。\n")
+	guide.WriteString("8. 除非用户明确要求，不调用 `vpn_disconnect`；存在图形终端或桌面网页代理时 MCP 无权断开连接。\n")
 	guide.WriteString("9. 用户明确要求传输文件时，先确认目标 Profile、上传的本机绝对路径和远端目录，或下载的远端路径和本机绝对目录，再使用 `file_upload_*` 或 `file_download_*`；`overwrite` 默认保持 `false`，只有用户明确同意覆盖时才设为 `true`。\n")
-	guide.WriteString("10. 如果当前 AI 环境不能注册 Streamable HTTP MCP 或不能添加自定义 Authorization 请求头，应明确告知用户完成客户端配置，不得假装已经连接。\n\n")
+	guide.WriteString("10. 如果当前 AI 环境不能注册 Streamable HTTP MCP 或不能添加自定义 Authorization 请求头，应明确告知用户完成客户端配置，不得假装已经连接。\n")
+	guide.WriteString("11. 获取服务器网页链接使用 `browser_open`，返回给用户完整的 `access_url`；不能删掉令牌路径或使用浏览器跳转后的地址。链接只在 LabRemote 所在电脑有效，必须保持 LabRemote 和连接运行，不得公开发布链接。\n\n")
 
 	guide.WriteString("## 2. MCP 客户端配置（含敏感令牌）\n\n")
 	guide.WriteString("将以下 `labremote` 节点合并到 AI 客户端的 MCP 配置，然后重新加载客户端：\n\n")
@@ -77,6 +78,11 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("| `ssh_session_read` | 按 cursor 增量读取 Base64 输出 | `session_id`, `cursor`, `max_bytes`, `wait_ms` |\n")
 	guide.WriteString("| `ssh_session_resize` | 调整 PTY 尺寸 | `session_id`, `cols`, `rows` |\n")
 	guide.WriteString("| `ssh_session_close` | 关闭 MCP 专属 PTY | `session_id` |\n")
+	guide.WriteString("| `ssh_session_directory` | 查询 MCP 终端当前目录 | `session_id` |\n")
+	guide.WriteString("| `file_list_directory` | 浏览远端目录；需上传或下载权限 | `profile_id`, `directory`（可省略，默认主目录） |\n")
+	guide.WriteString("| `browser_open` | 创建或复用 MCP 网页访问链接 | `profile_id`, `target_url` |\n")
+	guide.WriteString("| `browser_list` | 查询 MCP 自有网页代理及完整链接 | `profile_id` |\n")
+	guide.WriteString("| `browser_close` | 关闭 MCP 自有网页代理 | `profile_id`, `access_id` |\n")
 	guide.WriteString("| `file_upload_start` | 异步上传本机文件或目录 | `profile_id`, `local_paths`, `remote_directory`, `overwrite`, `resume` |\n")
 	guide.WriteString("| `file_upload_status` | 查询 MCP 自有上传任务 | `job_id` |\n")
 	guide.WriteString("| `file_upload_cancel` | 取消 MCP 自有上传任务 | `job_id` |\n")
@@ -125,7 +131,19 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("4. 保存返回的 `job_id`，使用 `file_download_status` 低频轮询到终态，检查传输字节、已续传字节、文件/目录完成数和错误字段。\n")
 	guide.WriteString("5. 用户取消任务时调用 `file_download_cancel`。MCP 只能查询或取消当前服务实例自己创建的下载任务，不能操作图形界面任务。\n\n")
 
-	guide.WriteString("## 9. 参数限制与状态解释\n\n")
+	guide.WriteString("## 9. 推荐工作流：获取服务器网页访问链接\n\n")
+	guide.WriteString("1. 从 `profiles_list` 选择 `browser_allowed=true` 的连接。旧配置默认不开放网页权限，请在连接编辑窗口勾选“允许获取网页访问链接”。\n")
+	guide.WriteString("2. 调用 `browser_open`，例如访问服务器自身的 8080 端口：\n\n```json\n")
+	fmt.Fprintf(&guide, "{\n  \"profile_id\": %q,\n  \"target_url\": \"http://127.0.0.1:8080\"\n}\n", exampleProfileID(profiles))
+	guide.WriteString("```\n\n")
+	guide.WriteString("3. 工具自动建立 SSH 并返回 `access_id`、`profile_id`、`target_url`、`access_url`，不会自动打开系统浏览器。将完整 `access_url` 以可点击链接交给用户。目标中的 `127.0.0.1` 指远端 SSH 服务器；返回地址中的 `127.0.0.1` 指 LabRemote 所在电脑。目标端口无需开放公网，但 SSH 服务端必须允许 TCP 转发。\n")
+	guide.WriteString("4. 同一连接的相同目标会复用 MCP 自有代理；再次查询链接使用 `browser_list`。MCP 不会返回或复用图形界面创建的链接。\n")
+	guide.WriteString("5. 用户不再需要该网页时，使用 `profile_id` 和 `access_id` 调用 `browser_close`。关闭 MCP、重新生成 Token、主动断开连接或撤销网页权限时链接失效；停止 MCP 不关闭桌面网页代理。\n\n")
+	guide.WriteString("目录浏览：`file_list_directory` 返回 `path`、`parent` 和 `entries`（名称、路径、目录/符号链接标记、大小、修改时间），不下载文件。`ssh_session_directory` 返回终端当前 `directory`；远端需支持 `/proc`，不可用时显式报错，不猜测工作目录。\n\n")
+
+	guide.WriteString("## 10. 参数限制与状态解释\n\n")
+	guide.WriteString("- `profiles_list` 同时返回 `exec_allowed`、`interactive_allowed`、`file_upload_allowed`、`file_download_allowed`、`file_browse_allowed`、`browser_allowed`、`disconnect_allowed`；`connection_status.browser_sessions` 包含桌面和 MCP 网页代理总数。\n")
+	guide.WriteString("- 每个 Profile 最多 16 个 MCP 网页代理；`browser_open.target_url` 最多 8192 字节，只支持 HTTP/HTTPS，不能包含用户名和密码；`file_list_directory.directory` 最多 4096 字节。\n")
 	guide.WriteString("- `ssh_exec.timeout_seconds`：默认 30，最大 300 秒，覆盖连接、会话创建、命令启动和执行全过程；超时后不自动重放命令。\n")
 	guide.WriteString("- SSH 每 15 秒进行一次心跳检测，10 秒无响应会淘汰失效连接；下一次操作可重新连接。状态查询不等待网络操作完成。\n")
 	guide.WriteString("- 文件传输使用独立 SSH 连接，取消不关闭已有终端。连续 60 秒没有 SFTP 数据活动会结束停滞传输，保留安全续传分片；保存原 job_id，恢复连接后用 resume=true 续传尚未完成的文件。\n")
@@ -141,9 +159,10 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("- 每个 Profile 同时最多一个下载任务；任务内部最多并行处理 3 个文件，单个大文件使用并发 SFTP 请求。\n")
 	guide.WriteString("- 下载状态依次可能为 `queued`、`scanning`、`downloading`，终态为 `completed`、`failed` 或 `cancelled`。\n")
 	guide.WriteString("- `connection_mode` 为 `isolated_tunnel`、`openvpn_ssh`、`atrust_ssh` 或 `direct_ssh`。aTrust 与其他隔离方式使用相同连接状态，认证入口初始化成功不等同于目标 SSH 可达。`vpn_status=not_required` 表示该配置直接连接 SSH；其他状态包括 `disconnected`、`preparing`、`dialing`、`connected`、`reconnecting`、`disconnecting`、`failed`。\n")
-	guide.WriteString("- `vpn_disconnect(force=true)` 仍不能关闭图形界面创建的终端。\n\n")
+	guide.WriteString("- `vpn_disconnect(force=true)` 仍不能断开有图形终端或桌面网页代理正在使用的连接。\n\n")
 
-	guide.WriteString("## 10. 常见错误处理\n\n")
+	guide.WriteString("## 11. 常见错误处理\n\n")
+	guide.WriteString("`BROWSER_URL_INVALID` 表示目标网页地址无效；`MCP_BROWSER_NOT_FOUND` 表示代理已关闭或不属于 MCP；`MCP_INPUT_INVALID` 表示配置 ID、访问 ID 或目录参数无效；`TERMINAL_DIRECTORY_UNAVAILABLE` 表示当前终端目录不可用。修正输入或重新打开自有代理，不得操作桌面资源。\n\n")
 	guide.WriteString("| 错误 | AI 应采取的动作 |\n")
 	guide.WriteString("|---|---|\n")
 	guide.WriteString("| `MCP_UNAUTHORIZED` / HTTP 401 | 停止重试，请用户重新导出配置或更新 Token |\n")
@@ -167,8 +186,8 @@ func buildAIGuideMarkdown(status Status, configuration string, profiles []model.
 	guide.WriteString("| `DOWNLOAD_BUSY` | 等待该 Profile 的当前下载结束，或取消自有下载任务 |\n")
 	guide.WriteString("| `DOWNLOAD_CONFLICT` | 不自动覆盖；请用户确认后再设置 `overwrite=true` |\n\n")
 
-	guide.WriteString("## 11. 安全与撤销\n\n")
-	guide.WriteString("本文档本身包含访问令牌。任务完成后应妥善保管或删除文件；怀疑泄露时，在 LabRemote 中点击“重新生成令牌”，旧令牌会立即失效。关闭 MCP 开关会停止服务、取消 MCP 自有上传和下载并关闭 MCP 专属会话，但不会关闭图形界面的 SSH 标签或传输任务。\n")
+	guide.WriteString("## 12. 安全与撤销\n\n")
+	guide.WriteString("本文档本身包含访问令牌。任务完成后应妥善保管或删除文件；怀疑泄露时，在 LabRemote 中点击“重新生成令牌”，旧令牌会立即失效。关闭 MCP 开关会停止服务、取消 MCP 自有上传和下载、关闭 MCP 专属会话和网页代理，但不会关闭图形界面的 SSH 标签、传输任务或网页代理。网页访问链接也包含令牌，审计不保存目标 URL、访问 URL 或令牌。\n")
 	return guide.String()
 }
 
@@ -185,6 +204,12 @@ func profileCapabilities(value model.ConnectionProfile) string {
 	}
 	if value.MCPPolicy.AllowFileDownload {
 		capabilities = append(capabilities, "文件下载")
+	}
+	if value.MCPPolicy.AllowFileUpload || value.MCPPolicy.AllowFileDownload {
+		capabilities = append(capabilities, "远端目录浏览")
+	}
+	if value.MCPPolicy.AllowBrowser {
+		capabilities = append(capabilities, "网页访问链接")
 	}
 	if value.MCPPolicy.AllowDisconnect {
 		capabilities = append(capabilities, "断开连接")

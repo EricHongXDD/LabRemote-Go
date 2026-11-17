@@ -18,6 +18,12 @@ type CoreService interface {
 	ConnectionStatus(ctx context.Context, profileID string) (model.ConnectionStatus, error)
 	MCPConnect(ctx context.Context, profileID string) error
 	MCPDisconnect(ctx context.Context, profileID string, force bool) error
+	MCPOpenBrowser(ctx context.Context, profileID, targetURL string) (model.BrowserAccess, error)
+	MCPListBrowser(ctx context.Context, profileID string) ([]model.BrowserAccess, error)
+	MCPCloseBrowser(ctx context.Context, profileID, accessID string) error
+	CloseMCPBrowser(ctx context.Context)
+	MCPListRemoteDirectory(ctx context.Context, profileID, directory string) (model.RemoteDirectory, error)
+	MCPSessionWorkingDirectory(ctx context.Context, sessionID string) (string, error)
 	MCPExec(ctx context.Context, request model.ExecRequest) (model.ExecResult, error)
 	MCPOpenSession(ctx context.Context, profileID string, cols, rows int) (string, error)
 	MCPWriteSession(ctx context.Context, sessionID string, data []byte) error
@@ -49,6 +55,11 @@ type profileSummary struct {
 	SSHStatus           string `json:"ssh_status"`
 	FileUploadAllowed   bool   `json:"file_upload_allowed"`
 	FileDownloadAllowed bool   `json:"file_download_allowed"`
+	BrowserAllowed      bool   `json:"browser_allowed"`
+	FileBrowseAllowed   bool   `json:"file_browse_allowed"`
+	ExecAllowed         bool   `json:"exec_allowed"`
+	InteractiveAllowed  bool   `json:"interactive_allowed"`
+	DisconnectAllowed   bool   `json:"disconnect_allowed"`
 }
 
 type profilesOutput struct {
@@ -65,6 +76,7 @@ type statusOutput struct {
 	MCPSessions     int    `json:"mcp_sessions"`
 	ActiveCommands  int    `json:"active_commands"`
 	ActiveTransfers int    `json:"active_transfers"`
+	BrowserSessions int    `json:"browser_sessions"`
 }
 
 type okOutput struct {
@@ -149,10 +161,15 @@ type downloadJobInput struct {
 }
 
 func addTools(server *mcp.Server, controller *Controller) {
+	mcp.AddTool(server, &mcp.Tool{Name: "browser_open", Description: "通过 SSH 创建服务器网页访问链接，返回含令牌的完整 access_url；不自动打开浏览器，仅在 LabRemote 所在电脑可用；需独立网页权限"}, controller.browserOpen)
+	mcp.AddTool(server, &mcp.Tool{Name: "browser_list", Description: "查询指定配置下 MCP 自己创建的网页代理及完整访问链接"}, controller.browserList)
+	mcp.AddTool(server, &mcp.Tool{Name: "browser_close", Description: "关闭指定 MCP 网页代理，使其访问链接失效；不关闭桌面界面的网页代理"}, controller.browserClose)
+	mcp.AddTool(server, &mcp.Tool{Name: "file_list_directory", Description: "通过 SFTP 浏览远端目录，返回路径、文件类型、大小及修改时间；需要文件上传或下载权限"}, controller.fileListDirectory)
+	mcp.AddTool(server, &mcp.Tool{Name: "ssh_session_directory", Description: "查询 MCP 交互终端当前工作目录；远端需要支持 /proc，不支持时返回明确错误"}, controller.sessionDirectory)
 	mcp.AddTool(server, &mcp.Tool{Name: "profiles_list", Description: "列出明确授权给 MCP 使用的 LabRemote 连接配置"}, controller.profilesList)
 	mcp.AddTool(server, &mcp.Tool{Name: "connection_status", Description: "查询一个已授权配置的连接方式、隔离隧道、SSH 和活动会话状态"}, controller.connectionStatus)
 	mcp.AddTool(server, &mcp.Tool{Name: "vpn_connect", Description: "兼容名称：按配置建立进程内 SoftEther/OpenVPN 隔离隧道加 SSH，或直接 SSH；OpenVPN 验证码在桌面输入"}, controller.vpnConnect)
-	mcp.AddTool(server, &mcp.Tool{Name: "vpn_disconnect", Description: "兼容名称：断开 SSH 与可选隔离隧道；图形终端存在时始终拒绝"}, controller.vpnDisconnect)
+	mcp.AddTool(server, &mcp.Tool{Name: "vpn_disconnect", Description: "兼容名称：断开 SSH 与可选隔离隧道；图形终端或桌面网页代理存在时始终拒绝"}, controller.vpnDisconnect)
 	mcp.AddTool(server, &mcp.Tool{Name: "ssh_exec", Description: "在已授权的 SSH 服务器执行一条非交互命令"}, controller.sshExec)
 	mcp.AddTool(server, &mcp.Tool{Name: "ssh_session_open", Description: "打开 MCP 专属的交互式 SSH PTY 会话"}, controller.sessionOpen)
 	mcp.AddTool(server, &mcp.Tool{Name: "ssh_session_write", Description: "向 MCP 交互会话写入 Base64 数据"}, controller.sessionWrite)
@@ -183,16 +200,25 @@ func (c *Controller) profilesList(ctx context.Context, _ *mcp.CallToolRequest, _
 	}
 	output := profilesOutput{Profiles: make([]profileSummary, 0, len(values))}
 	for _, value := range values {
+		summary := profileSummary{
+			ID: value.ID, Name: value.DisplayName, ConnectionMode: string(value.EffectiveConnectionMode()),
+			VPNStatus: "unknown", SSHStatus: "unknown",
+			FileUploadAllowed: value.MCPPolicy.AllowFileUpload, FileDownloadAllowed: value.MCPPolicy.AllowFileDownload,
+			BrowserAllowed: value.MCPPolicy.AllowBrowser, FileBrowseAllowed: value.MCPPolicy.AllowFileUpload || value.MCPPolicy.AllowFileDownload,
+			ExecAllowed: value.MCPPolicy.AllowExec, InteractiveAllowed: value.MCPPolicy.AllowInteractive, DisconnectAllowed: value.MCPPolicy.AllowDisconnect,
+		}
 		status, statusErr := c.core.ConnectionStatus(ctx, value.ID)
 		if statusErr != nil {
-			output.Profiles = append(output.Profiles, profileSummary{ID: value.ID, Name: value.DisplayName, ConnectionMode: string(value.EffectiveConnectionMode()), VPNStatus: "unknown", SSHStatus: "unknown", FileUploadAllowed: value.MCPPolicy.AllowFileUpload, FileDownloadAllowed: value.MCPPolicy.AllowFileDownload})
+			output.Profiles = append(output.Profiles, summary)
 			continue
 		}
 		sshStatus := "disconnected"
 		if status.SSHConnected {
 			sshStatus = "connected"
 		}
-		output.Profiles = append(output.Profiles, profileSummary{ID: value.ID, Name: value.DisplayName, ConnectionMode: string(value.EffectiveConnectionMode()), VPNStatus: string(status.VPN.State), SSHStatus: sshStatus, FileUploadAllowed: value.MCPPolicy.AllowFileUpload, FileDownloadAllowed: value.MCPPolicy.AllowFileDownload})
+		summary.VPNStatus = string(status.VPN.State)
+		summary.SSHStatus = sshStatus
+		output.Profiles = append(output.Profiles, summary)
 	}
 	return result(output)
 }
@@ -209,6 +235,7 @@ func (c *Controller) connectionStatus(ctx context.Context, _ *mcp.CallToolReques
 		ProfileID: status.ProfileID, ConnectionMode: string(status.ConnectionMode), VPNStatus: string(status.VPN.State), RouteReady: status.VPN.RouteReady,
 		SSHConnected: status.SSHConnected, UISessions: status.UISessions, MCPSessions: status.MCPSessions,
 		ActiveCommands: status.ActiveCommands, ActiveTransfers: status.ActiveTransfers,
+		BrowserSessions: status.BrowserSessions,
 	})
 }
 

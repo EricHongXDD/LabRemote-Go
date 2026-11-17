@@ -11,7 +11,7 @@ MCP 服务具有以下边界：
 - 所有请求必须携带界面生成的 Bearer Token；
 - 只显示明确授权给 MCP 的连接配置；
 - 隧道密码、SSH 密码、私钥文件路径、私钥口令和服务器密钥不会作为 MCP 参数或返回值出现；
-- 当前 MCP 提供连接、命令、交互终端和异步文件上传、下载工具；
+- 当前 MCP 提供连接、命令、交互终端、当前目录查询、远端目录浏览、异步文件上传/下载和服务器网页访问链接工具；
 - 工具名中的 `vpn_connect`、`vpn_disconnect` 是兼容名称：`isolated_tunnel` 配置操作进程内 SoftEther 隔离隧道和 SSH，`direct_ssh` 配置只操作直接 SSH 连接；都不会连接或修改系统 VPN。
 
 ## 2. 首次启用
@@ -30,9 +30,11 @@ MCP 服务具有以下边界：
 |---|---|---|
 | 允许 MCP 看到此配置 | MCP 可以列出、查询并连接此配置 | `profiles_list`、`connection_status`、`vpn_connect` |
 | 允许执行非交互命令 | 允许执行非交互 SSH 命令 | `ssh_exec` |
-| 允许创建交互会话 | 允许创建和操作 MCP 专属 PTY | `ssh_session_open/write/read/resize/close` |
+| 允许创建交互会话 | 允许创建和操作 MCP 专属 PTY，并查询当前目录 | `ssh_session_open/write/read/resize/close/directory` |
 | 允许上传本地文件 | 允许把 LabRemote 所在电脑上的文件或目录上传到指定远端目录 | `file_upload_start/status/cancel` |
 | 允许下载文件到本机 | 允许把指定远端文件或目录下载到 LabRemote 所在电脑的已存在目录 | `file_download_start/status/cancel` |
+| 允许获取网页访问链接 | 允许创建、查询和关闭 MCP 自有网页代理；旧配置默认不授权 | `browser_open/list/close` |
+| 允许上传或下载文件（任一） | 允许浏览远端目录，不传输文件 | `file_list_directory` |
 | 允许断开连接 | 允许请求断开 SSH 与可选隔离隧道 | `vpn_disconnect` |
 
 建议只勾选实际需要的最小权限。仅打开全局 MCP 开关不会自动授权任何连接。
@@ -48,7 +50,7 @@ MCP 服务具有以下边界：
 
 - 当前 Streamable HTTP 地址和带 Bearer Token 的客户端配置；
 - 当前明确授权给 MCP 的连接 ID、SSH 目标和能力；
-- 16 个 MCP 工具的用途、关键参数与限制；
+- 21 个 MCP 工具的用途、关键参数与限制；
 - 非交互命令、交互 PTY 和异步文件上传、下载的推荐调用流程；
 - Base64 编码、增量读取 cursor、退出码和截断处理规则；
 - 高风险终端操作的确认要求、错误处理和会话清理规范。
@@ -131,7 +133,12 @@ Token 等同于本机 MCP 访问凭据：
       "vpn_status": "not_required",
       "ssh_status": "connected",
       "file_upload_allowed": true,
-      "file_download_allowed": true
+      "file_download_allowed": true,
+      "file_browse_allowed": true,
+      "browser_allowed": true,
+      "exec_allowed": false,
+      "interactive_allowed": false,
+      "disconnect_allowed": false
     }
   ]
 }
@@ -414,6 +421,70 @@ MCP 工具不能读取、写入、缩放或关闭图形界面创建的终端。�
 
 成功返回 `{"ok":true}`。取消后安全分片会保留，以便用户随后使用相同来源、目标和 `resume=true` 续传。关闭 MCP 或重新生成 Token 也会取消 MCP 自有下载，但不会取消图形界面传输任务。
 
+### 5.17 `browser_open`
+
+创建或复用当前 MCP 服务自己拥有的网页代理，自动建立 SSH，但不自动打开系统浏览器。需要独立的“允许获取网页访问链接”权限（`allow_browser`）。
+
+输入：
+
+```json
+{"profile_id":"profile-id","target_url":"http://127.0.0.1:8080/path?view=1"}
+```
+
+返回：
+
+```json
+{
+  "access_id": "随机代理ID",
+  "profile_id": "profile-id",
+  "target_url": "http://127.0.0.1:8080/path?view=1",
+  "access_url": "http://127.0.0.1:随机端口/__labremote_browser__/随机令牌"
+}
+```
+
+- `target_url` 是 SSH 服务器能够访问的地址，`127.0.0.1` 指远端服务器自身；省略协议时默认 HTTP。仅支持 HTTP/HTTPS，最多 8192 字节，禁止 URL 内嵌用户名或密码。
+- 返回的 `access_url` 是 LabRemote 所在电脑上的完整访问入口，必须保留令牌路径；可直接交给用户点击，不能复制首次跳转后的无令牌地址给另一个浏览器。
+- 链接只在 LabRemote 所在电脑有效，需保持程序和连接运行；目标网页端口无需开放公网，但 SSH 服务端必须允许 TCP 转发。
+- 同一 Profile、相同目标复用同一个 MCP 代理；桌面界面代理独立，不会暴露给 MCP。每个 Profile 最多 16 个 MCP 代理，超过上限返回 `MCP_BUSY`。
+- 返回链接表示代理已建立，不保证目标网页服务正在运行；目标连接错误在访问网页时显示。
+- 链接含访问令牌，不能公开发布或写入日志；目标 URL 的查询参数也可能包含敏感信息，审计不记录 URL。
+
+### 5.18 `browser_list`
+
+```json
+{"profile_id":"profile-id"}
+```
+
+返回 `{"accesses":[...]}`，每项格式与 `browser_open` 相同，包含可再次打开的完整链接。没有代理时返回空数组。只列出 MCP 自有代理，实时复查网页权限，不建立 SSH。
+
+### 5.19 `browser_close`
+
+```json
+{"profile_id":"profile-id","access_id":"browser_open返回的ID"}
+```
+
+成功返回 `{"ok":true}`。只关闭指定 MCP 代理，链接随即失效，不断开 SSH，也不会关闭桌面代理；错误 ID、跨 Profile 或桌面代理 ID 返回 `MCP_BROWSER_NOT_FOUND`。停止 MCP、重新生成 Token、主动断开、删除配置或撤销网页权限也会回收相应 MCP 代理。
+
+### 5.20 `file_list_directory`
+
+```json
+{"profile_id":"profile-id","directory":"~/results"}
+```
+
+需要文件上传或下载权限之一（`file_browse_allowed=true`），自动建立连接，通过 SFTP 读取目录，不执行用户命令、不下载文件。`directory` 可省略，默认 SSH 主目录；支持绝对路径、相对主目录路径和 `~`，最长 4096 字节。
+
+返回 `path`、`parent` 和 `entries` 数组，每项含 `name`、`path`、`is_directory`、`is_symlink`、`size`、`mod_time_ms`；目录优先排序，修改时间为 Unix 毫秒。
+
+### 5.21 `ssh_session_directory`
+
+```json
+{"session_id":"mcp-session-..."}
+```
+
+返回 `{"directory":"/home/user/results"}`。只能查询 MCP 创建的终端，使用已有的终端进程跟踪机制；远端需支持 `/proc`，不可用时返回 `TERMINAL_DIRECTORY_UNAVAILABLE`，不会把猜测目录作为结果。
+
+`connection_status` 另增加 `browser_sessions`，表示该 Profile 的桌面和 MCP 网页代理总数。
+
 ## 6. 常用工作流
 
 ### 6.1 执行一次命令
@@ -452,6 +523,14 @@ MCP 工具不能读取、写入、缩放或关闭图形界面创建的终端。�
 4. 保存 `job_id`，用 `file_download_status` 轮询到终态；
 5. 展示传输字节、已续传字节和错误信息；用户取消时调用 `file_download_cancel`。
 
+### 6.5 获取服务器网页链接
+
+1. 编辑连接开启 MCP 可见权限和“允许获取网页访问链接”；
+2. `profiles_list` 获取 `browser_allowed=true` 的真实 Profile ID；
+3. `browser_open` 传入该 ID 和服务器网页地址；
+4. 将返回的完整 `access_url` 交给用户在同一台电脑打开；
+5. 需要重新取链接时调用 `browser_list`，不再使用时通过 `browser_close` 关闭指定 `access_id`。
+
 ## 7. 安全设计
 
 - 服务固定监听 `127.0.0.1`，并验证请求来源地址必须为回环地址；
@@ -464,7 +543,7 @@ MCP 工具不能读取、写入、缩放或关闭图形界面创建的终端。�
 - 最多 4 个并发命令、8 个 MCP 交互会话；
 - 每个交互会话使用 2 MiB 有界环形缓冲区；
 - 审计日志只保存工具名、`profile_id`、结果、退出码、耗时和命令 SHA-256，不保存命令正文、stdout、stderr、本地路径或远端传输路径；
-- MCP 不能操作图形界面终端，也不能在图形终端存在时断开对应隔离隧道。
+- MCP 不能操作图形界面终端或网页代理，也不能在图形终端或桌面网页代理存在时断开对应连接。
 - MCP 只能查询或取消当前服务实例自己创建的上传、下载任务；所有传输操作还会实时复查 Profile 对应的独立文件传输权限。
 - 文件上传权限允许 MCP 读取 LabRemote 进程有权读取的本机文件并发送到远端，属于高敏感权限；只应授予受信任客户端，并且每次只上传用户明确指定的路径。
 - 文件下载权限允许 MCP 将远端内容写入 LabRemote 进程有权写入的本机目录，同样属于高敏感权限；只应授予受信任客户端，并且每次只下载到用户明确指定的目录。
@@ -475,10 +554,10 @@ MCP 工具不能读取、写入、缩放或关闭图形界面创建的终端。�
 
 需要立即停止访问时，可按影响范围选择：
 
-1. 关闭全局 MCP 开关：停止服务、取消 MCP 自有上传和下载并关闭全部 MCP 交互会话；
+1. 关闭全局 MCP 开关：停止服务、取消 MCP 自有上传和下载并关闭全部 MCP 交互会话和网页代理；桌面代理保持运行；
 2. 重新生成令牌：使所有使用旧 Token 的客户端立即失效；
 3. 编辑连接并关闭“允许 MCP 看到此配置”：仅撤销该 Profile；
-4. 单独关闭命令、交互、文件上传、文件下载或断开权限：保留未撤销的能力；
+4. 单独关闭命令、交互、文件上传、文件下载、网页或断开权限：保留未撤销的能力；撤销网页权限会立即回收已有 MCP 链接；
 5. 退出 LabRemote：MCP 服务随桌面进程停止。
 
 相关文件位置：
@@ -501,7 +580,7 @@ MCP 工具不能读取、写入、缩放或关闭图形界面创建的终端。�
 | HTTP 403 | 请求不是来自回环地址，或 Host/Origin 不符合限制 | 使用复制出的 `127.0.0.1` 地址，不要通过代理或端口转发 |
 | HTTP 429 | 一分钟内超过 120 个请求 | 等待 `Retry-After` 指示的时间，降低轮询频率 |
 | `MCP_PROFILE_FORBIDDEN` | Profile 未授权给 MCP，或 `profile_id` 不正确 | 编辑连接开启 MCP 可见权限，再通过 `profiles_list` 获取 ID |
-| `MCP_TOOL_FORBIDDEN` | 未授予命令、交互、文件上传、文件下载或断开权限；或存在图形终端时请求断开 | 调整最小必要权限，或由用户在图形界面处理活动终端 |
+| `MCP_TOOL_FORBIDDEN` | 未授予命令、交互、文件上传、文件下载、网页或断开权限；或存在图形终端、桌面网页代理时请求断开 | 调整最小必要权限，或由用户在图形界面处理活动资源 |
 | `TUNNEL_CERT_UNKNOWN` / `SSH_HOST_KEY_UNKNOWN` | 尚未在图形界面确认服务器指纹 | 先在图形界面连接并核对、确认指纹 |
 | `TUNNEL_CERT_CHANGED` | 已固定隧道证书指纹发生变化 | 停止连接并联系管理员核实，不要绕过 |
 | `SSH_HOST_KEY_CHANGED` | 已固定 SSH 主机指纹发生变化 | 停止重试，请用户联系管理员核对；用户可在图形界面连接时比较新旧指纹，确认无误后手动信任并重试，MCP 不得自动接受 |
@@ -510,6 +589,10 @@ MCP 工具不能读取、写入、缩放或关闭图形界面创建的终端。�
 | `SSH_KEY_PASSPHRASE_REQUIRED` / `SSH_KEY_PASSPHRASE_INVALID` | 私钥口令缺失或错误 | 在连接编辑页更新私钥口令 |
 | `SSH_COMMAND_TIMEOUT` | 命令超过超时，或请求被取消 | 调高 `timeout_seconds`，最大 300；或拆分任务 |
 | `MCP_SESSION_NOT_FOUND` | 会话已关闭、ID 错误，或试图操作图形界面会话 | 重新调用 `ssh_session_open`，只使用其返回的 ID |
+| `BROWSER_URL_INVALID` | 网页目标无效，含内嵌账号密码或超长 | 修正 `target_url` 后重试 |
+| `MCP_BROWSER_NOT_FOUND` | 代理已关闭、不属于 MCP 或配置不匹配 | 调用 `browser_list` 取得自有 ID，或重新 `browser_open` |
+| `MCP_INPUT_INVALID` | 配置 ID、访问 ID 或目录无效 | 检查参数长度、必填值与空字符 |
+| `TERMINAL_DIRECTORY_UNAVAILABLE` | 终端已关闭或远端不支持读取当前目录 | 检查会话状态，使用明确的目标目录 |
 | `MCP_UPLOAD_INVALID` | 本机路径不是绝对路径、远端目录为空或路径数量/长度超限 | 修正参数后重新调用 `file_upload_start` |
 | `MCP_UPLOAD_NOT_FOUND` | 上传 ID 不存在，或不是当前 MCP 服务创建的任务 | 丢弃旧 ID，只使用本次 `file_upload_start` 返回的 `job_id` |
 | `UPLOAD_BUSY` | 同一 Profile 已有上传任务 | 等待当前任务结束，或取消 MCP 自有任务后重试 |

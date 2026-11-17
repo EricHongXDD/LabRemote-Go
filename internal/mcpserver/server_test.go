@@ -27,6 +27,7 @@ type lifecycleCore struct {
 	downloadCancelled string
 	closedDownloads   []string
 	downloadStatusErr error
+	browserClosed     int
 }
 
 func (c *lifecycleCore) MCPProfiles(context.Context) ([]model.ConnectionProfile, error) {
@@ -85,6 +86,21 @@ func (c *lifecycleCore) CloseMCPDownloads(_ context.Context, jobIDs []string) {
 }
 func (c *lifecycleCore) CloseMCPSessions(context.Context) { c.mcpClosed++ }
 
+func (c *lifecycleCore) MCPOpenBrowser(_ context.Context, profileID, targetURL string) (model.BrowserAccess, error) {
+	return model.BrowserAccess{AccessID: "test-access", ProfileID: profileID, TargetURL: targetURL, AccessURL: "http://127.0.0.1:12345/__labremote_browser__/secret"}, nil
+}
+func (c *lifecycleCore) MCPListBrowser(context.Context, string) ([]model.BrowserAccess, error) {
+	return nil, nil
+}
+func (c *lifecycleCore) MCPCloseBrowser(context.Context, string, string) error { return nil }
+func (c *lifecycleCore) CloseMCPBrowser(context.Context)                       { c.browserClosed++ }
+func (c *lifecycleCore) MCPListRemoteDirectory(_ context.Context, _, directory string) (model.RemoteDirectory, error) {
+	return model.RemoteDirectory{Path: directory, Entries: []model.RemoteEntry{}}, nil
+}
+func (c *lifecycleCore) MCPSessionWorkingDirectory(context.Context, string) (string, error) {
+	return "/home/test", nil
+}
+
 func freeLocalPort(t *testing.T) int {
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -106,7 +122,7 @@ func TestStopMCPDoesNotTouchUISessions(t *testing.T) {
 	if err := controller.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if core.mcpClosed != 1 || core.uiSessions != 2 {
+	if core.mcpClosed != 1 || core.uiSessions != 2 || core.browserClosed != 1 {
 		t.Fatalf("关闭边界异常: mcpClosed=%d uiSessions=%d", core.mcpClosed, core.uiSessions)
 	}
 	if controller.Status().Enabled {
