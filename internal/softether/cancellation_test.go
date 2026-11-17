@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -70,6 +72,18 @@ func TestProtocolExchangeRespectsCancellationAfterTLS(t *testing.T) {
 				}
 				select {
 				case err := <-done:
+					if deadline && ctx.Err() == nil {
+						// 套接字期限与上下文定时器同时到期，不能假定上下文回调先被调度。
+						var timeout net.Error
+						if !errors.As(err, &timeout) || !timeout.Timeout() {
+							t.Fatalf("认证在上下文到期前异常退出: %v", err)
+						}
+						select {
+						case <-ctx.Done():
+						case <-time.After(time.Second):
+							t.Fatal("套接字超时后上下文未在期限内到期")
+						}
+					}
 					if err == nil || ctx.Err() == nil {
 						t.Fatalf("认证等待未正确取消: %v", err)
 					}
