@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ type Dialer interface {
 
 type session struct {
 	id           string
+	owner        string
 	profileID    string
 	targetKey    string
 	token        string
@@ -54,16 +56,25 @@ func ValidateTargetURL(rawURL string) error {
 }
 
 func (m *Manager) Open(ctx context.Context, profileID, rawURL string) (string, error) {
+	access, err := m.OpenOwned(ctx, profileID, rawURL, "ui")
+	return access.AccessURL, err
+}
+
+// OpenOwned 按调用方隔离代理，避免 MCP 复用或关闭桌面界面的访问链接。
+func (m *Manager) OpenOwned(ctx context.Context, profileID, rawURL, owner string) (model.BrowserAccess, error) {
+	if err := ctx.Err(); err != nil {
+		return model.BrowserAccess{}, err
+	}
 	target, err := normalizeTargetURL(rawURL)
 	if err != nil {
-		return "", err
+		return model.BrowserAccess{}, err
 	}
 	targetKey := target.String()
 
 	m.mu.Lock()
 	for _, current := range m.sessions[profileID] {
-		if current.targetKey == targetKey {
-			value := current.bootstrapURL
+		if current.targetKey == targetKey && current.owner == owner {
+			value := current.access()
 			m.mu.Unlock()
 			return value, nil
 		}
@@ -72,21 +83,21 @@ func (m *Manager) Open(ctx context.Context, profileID, rawURL string) (string, e
 
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
-		return "", model.NewAppError("BROWSER_PROXY_START_FAILED", "无法启动本机网页访问代理", "browser_proxy", true).WithDetails(map[string]any{"reason": err.Error()})
+		return model.BrowserAccess{}, model.NewAppError("BROWSER_PROXY_START_FAILED", "无法启动本机网页访问代理", "browser_proxy", true).WithDetails(map[string]any{"reason": err.Error()})
 	}
 	token, err := randomToken(32)
 	if err != nil {
 		_ = listener.Close()
-		return "", model.NewAppError("BROWSER_PROXY_START_FAILED", "无法创建网页访问会话", "browser_proxy", true)
+		return model.BrowserAccess{}, model.NewAppError("BROWSER_PROXY_START_FAILED", "无法创建网页访问会话", "browser_proxy", true)
 	}
 	id, err := randomToken(12)
 	if err != nil {
 		_ = listener.Close()
-		return "", model.NewAppError("BROWSER_PROXY_START_FAILED", "无法创建网页访问会话", "browser_proxy", true)
+		return model.BrowserAccess{}, model.NewAppError("BROWSER_PROXY_START_FAILED", "无法创建网页访问会话", "browser_proxy", true)
 	}
 	localOrigin := "http://" + listener.Addr().String()
 	current := &session{
-		id: id, profileID: profileID, targetKey: targetKey, token: token,
+		id: id, owner: owner, profileID: profileID, targetKey: targetKey, token: token,
 		cookieName:   "labremote_browser_" + id,
 		bootstrapURL: localOrigin + bootstrapPrefix + token,
 		listener:     listener,
@@ -113,18 +124,38 @@ func (m *Manager) Open(ctx context.Context, profileID, rawURL string) (string, e
 	}
 
 	m.mu.Lock()
-	if m.sessions[profileID] == nil {
-		m.sessions[profileID] = make(map[string]*session)
-	}
 	// 并发打开同一目标时复用先创建的代理，避免多余监听端口。
 	for _, existing := range m.sessions[profileID] {
-		if existing.targetKey == targetKey {
-			value := existing.bootstrapURL
+		if existing.targetKey == targetKey && existing.owner == owner {
+			value := existing.access()
 			m.mu.Unlock()
 			_ = listener.Close()
 			current.transport.CloseIdleConnections()
 			return value, nil
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		m.mu.Unlock()
+		_ = listener.Close()
+		current.transport.CloseIdleConnections()
+		return model.BrowserAccess{}, err
+	}
+	if owner == "mcp" {
+		count := 0
+		for _, existing := range m.sessions[profileID] {
+			if existing.owner == owner {
+				count++
+			}
+		}
+		if count >= 16 {
+			m.mu.Unlock()
+			_ = listener.Close()
+			current.transport.CloseIdleConnections()
+			return model.BrowserAccess{}, model.NewAppError("MCP_BUSY", "此配置的 MCP 网页代理已达到 16 个上限，请关闭不用的访问链接", "browser_proxy", true)
+		}
+	}
+	if m.sessions[profileID] == nil {
+		m.sessions[profileID] = make(map[string]*session)
 	}
 	m.sessions[profileID][id] = current
 	m.mu.Unlock()
@@ -136,7 +167,59 @@ func (m *Manager) Open(ctx context.Context, profileID, rawURL string) (string, e
 		}
 		m.remove(current)
 	}()
-	return current.bootstrapURL, nil
+	return current.access(), nil
+}
+
+func (s *session) access() model.BrowserAccess {
+	return model.BrowserAccess{AccessID: s.id, ProfileID: s.profileID, TargetURL: s.targetKey, AccessURL: s.bootstrapURL}
+}
+
+func (m *Manager) ListOwned(profileID, owner string) []model.BrowserAccess {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	values := make([]model.BrowserAccess, 0)
+	for _, current := range m.sessions[profileID] {
+		if current.owner == owner {
+			values = append(values, current.access())
+		}
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i].AccessID < values[j].AccessID })
+	return values
+}
+
+func (m *Manager) CloseOwned(ctx context.Context, profileID, accessID, owner string) error {
+	m.mu.Lock()
+	current := m.sessions[profileID][accessID]
+	if current == nil || current.owner != owner {
+		m.mu.Unlock()
+		return model.NewAppError("MCP_BROWSER_NOT_FOUND", "网页访问不存在或不属于当前 MCP 服务", "browser_proxy", false)
+	}
+	delete(m.sessions[profileID], accessID)
+	if len(m.sessions[profileID]) == 0 {
+		delete(m.sessions, profileID)
+	}
+	m.mu.Unlock()
+	return current.close(ctx)
+}
+
+func (m *Manager) CloseOwner(ctx context.Context, owner string) {
+	m.mu.Lock()
+	values := make([]*session, 0)
+	for profileID, sessions := range m.sessions {
+		for id, current := range sessions {
+			if current.owner == owner {
+				values = append(values, current)
+				delete(sessions, id)
+			}
+		}
+		if len(sessions) == 0 {
+			delete(m.sessions, profileID)
+		}
+	}
+	m.mu.Unlock()
+	for _, current := range values {
+		_ = current.close(ctx)
+	}
 }
 
 func (m *Manager) Count(profileID string) int {

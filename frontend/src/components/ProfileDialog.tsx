@@ -317,6 +317,7 @@ export default function ProfileDialog({value, copySourceProfileID, onCancel, onS
                 <label className="check"><input type="checkbox" disabled={!profile.mcp_policy.enabled_for_profile} checked={profile.mcp_policy.allow_interactive} onChange={event => updatePolicy('allow_interactive', event.target.checked)} />允许创建交互会话</label>
                 <label className="check"><input type="checkbox" disabled={!profile.mcp_policy.enabled_for_profile} checked={profile.mcp_policy.allow_file_upload} onChange={event => updatePolicy('allow_file_upload', event.target.checked)} />允许上传本地文件</label>
                 <label className="check"><input type="checkbox" disabled={!profile.mcp_policy.enabled_for_profile} checked={profile.mcp_policy.allow_file_download} onChange={event => updatePolicy('allow_file_download', event.target.checked)} />允许下载文件到本机</label>
+                <label className="check"><input type="checkbox" disabled={!profile.mcp_policy.enabled_for_profile} checked={profile.mcp_policy.allow_browser ?? false} onChange={event => updatePolicy('allow_browser', event.target.checked)} />允许获取网页访问链接</label>
                 <label className="check"><input type="checkbox" disabled={!profile.mcp_policy.enabled_for_profile} checked={profile.mcp_policy.allow_disconnect} onChange={event => updatePolicy('allow_disconnect', event.target.checked)} />允许断开连接</label>
               </div>
             </div>

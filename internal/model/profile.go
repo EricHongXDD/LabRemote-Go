@@ -72,6 +72,7 @@ type MCPPolicy struct {
 	AllowInteractive  bool `json:"allow_interactive"`
 	AllowFileUpload   bool `json:"allow_file_upload"`
 	AllowFileDownload bool `json:"allow_file_download"`
+	AllowBrowser      bool `json:"allow_browser"`
 	AllowDisconnect   bool `json:"allow_disconnect"`
 }
 

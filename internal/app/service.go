@@ -279,6 +279,12 @@ func (s *Service) SaveProfile(ctx context.Context, request SaveProfileRequest) (
 		s.ssh.CloseProfile(ctx, value.ID)
 		_ = s.vpn.Disconnect(ctx, value.ID, true)
 	}
+	if !value.MCPPolicy.EnabledForProfile || !value.MCPPolicy.AllowBrowser {
+		// 撤销网页权限时同步回收已有 MCP 链接，保留桌面代理。
+		for _, access := range s.browser.ListOwned(value.ID, "mcp") {
+			_ = s.browser.CloseOwned(ctx, value.ID, access.AccessID, "mcp")
+		}
+	}
 	return value, nil
 }
 
@@ -867,7 +873,7 @@ func (s *Service) MCPDisconnect(ctx context.Context, profileID string, force boo
 		return err
 	}
 	ui, _, _ := s.ssh.Counts(profileID)
-	if ui > 0 {
+	if ui > 0 || len(s.browser.ListOwned(profileID, "ui")) > 0 {
 		return model.NewAppError("MCP_TOOL_FORBIDDEN", "MCP 不得断开图形界面正在使用的连接", "mcp_policy", false)
 	}
 	return s.Disconnect(ctx, profileID, force)
@@ -882,6 +888,67 @@ func (s *Service) MCPExec(ctx context.Context, request model.ExecRequest) (model
 		return model.ExecResult{}, err
 	}
 	return s.ssh.Exec(ctx, request)
+}
+
+func (s *Service) MCPOpenBrowser(ctx context.Context, profileID, targetURL string) (model.BrowserAccess, error) {
+	value, err := s.profiles.Get(ctx, profileID)
+	if err != nil {
+		return model.BrowserAccess{}, err
+	}
+	if err := policy.RequireBrowser(value); err != nil {
+		return model.BrowserAccess{}, err
+	}
+	if err := browserproxy.ValidateTargetURL(targetURL); err != nil {
+		return model.BrowserAccess{}, err
+	}
+	if err := s.EnsureConnected(ctx, profileID); err != nil {
+		return model.BrowserAccess{}, err
+	}
+	return s.browser.OpenOwned(ctx, profileID, targetURL, "mcp")
+}
+
+func (s *Service) MCPListBrowser(ctx context.Context, profileID string) ([]model.BrowserAccess, error) {
+	value, err := s.profiles.Get(ctx, profileID)
+	if err != nil {
+		return nil, err
+	}
+	if err := policy.RequireBrowser(value); err != nil {
+		return nil, err
+	}
+	return s.browser.ListOwned(profileID, "mcp"), nil
+}
+
+func (s *Service) MCPCloseBrowser(ctx context.Context, profileID, accessID string) error {
+	value, err := s.profiles.Get(ctx, profileID)
+	if err != nil {
+		return err
+	}
+	if err := policy.RequireBrowser(value); err != nil {
+		return err
+	}
+	return s.browser.CloseOwned(ctx, profileID, accessID, "mcp")
+}
+
+func (s *Service) CloseMCPBrowser(ctx context.Context) {
+	s.browser.CloseOwner(ctx, "mcp")
+}
+
+func (s *Service) MCPListRemoteDirectory(ctx context.Context, profileID, directory string) (model.RemoteDirectory, error) {
+	value, err := s.profiles.Get(ctx, profileID)
+	if err != nil {
+		return model.RemoteDirectory{}, err
+	}
+	if err := policy.RequireFileBrowse(value); err != nil {
+		return model.RemoteDirectory{}, err
+	}
+	return s.ListRemoteDirectory(ctx, profileID, directory)
+}
+
+func (s *Service) MCPSessionWorkingDirectory(ctx context.Context, sessionID string) (string, error) {
+	if !strings.HasPrefix(sessionID, "mcp-session-") {
+		return "", model.NewAppError("MCP_SESSION_NOT_FOUND", "MCP 只能访问自己创建的会话", "mcp_session", false)
+	}
+	return s.TerminalWorkingDirectory(ctx, sessionID)
 }
 
 func (s *Service) MCPStartUpload(ctx context.Context, request model.UploadRequest) (model.UploadProgress, error) {

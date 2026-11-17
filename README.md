@@ -22,7 +22,7 @@ LabRemote 是面向 Windows、Linux 和 macOS 的 SSH + 可选 VPN + 网页访�
 - 左侧连接/断开快捷操作、双击连接和连接项右键菜单；
 - 通过随机 `127.0.0.1` 临时代理和 SSH `direct-tcpip` 跳板完成网页访问，并在系统默认浏览器中打开；网络意外断开时自动恢复可选隧道和 SSH 后重试，代理随 Profile 主动断开统一回收；
 - 只监听 `127.0.0.1` 的 Streamable HTTP MCP 服务；
-- 16 个 MCP 工具，包括按已授权连接配置选择目标、非交互/交互 SSH 和异步文件上传、下载；具备 Profile 独立最小权限、任务所有权隔离、Bearer Token、Host/Origin 校验、速率与并发限制；
+- 21 个 MCP 工具，包括按已授权连接配置选择目标、非交互/交互 SSH、终端当前目录查询、远端目录浏览、异步文件上传/下载，以及服务器网页访问链接的创建、查询与关闭；具备 Profile 独立最小权限、任务所有权隔离、Bearer Token、Host/Origin 校验、速率与并发限制；
 - MCP 开启后可导出包含当前客户端配置、授权连接、工具协议、安全规范和终端操作工作流的 AI Markdown 手册；
 - JSONL 应用日志与只保存命令 SHA256 的 MCP 审计日志；
 - Windows amd64 可执行文件与 NSIS 安装包、Linux amd64 压缩包、macOS Universal 应用包构建。
@@ -69,7 +69,7 @@ npm.cmd run build
 - `LabRemote-macos-universal.zip`：同时支持 Apple Silicon 与 Intel 的 macOS `.app`；凭据保存到 Keychain；
 - `SHA256SUMS.txt`：全部发行文件的 SHA-256 校验值。
 
-推送符合 `v*` 格式的标签会自动构建三个平台并把产物上传到对应 GitHub Release。手动运行发行工作流时填写版本标签也会自动创建或更新 Release；只有显式关闭“发布到 Releases”时才仅保留 Actions Artifact。标签版本必须与 `wails.json` 中的 `info.productVersion` 一致，例如 `v1.5.9`。
+推送符合 `v*` 格式的标签会自动构建三个平台并把产物上传到对应 GitHub Release。手动运行发行工作流时填写版本标签也会自动创建或更新 Release；只有显式关闭“发布到 Releases”时才仅保留 Actions Artifact。标签版本必须与 `wails.json` 中的 `info.productVersion` 一致，例如 `v1.7.0`。
 
 SSH 每 15 秒发送一次需要回复的心跳，10 秒无响应时淘汰失效连接，下一次操作重新建立连接。`ssh_exec` 的 30 秒默认超时（最多 300 秒）覆盖连接、创建会话、启动和等待退出全过程；连接和创建会话期间状态查询仍可返回。命令不会自动重放，避免重复执行实验。若传输失败，请保留原 `job_id` 和分片，先恢复连接，再用 `resume=true` 续传尚未完成的文件；已完成文件默认不会被覆盖。
 

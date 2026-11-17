@@ -60,3 +60,23 @@ func RequireDisconnect(value model.ConnectionProfile) error {
 	}
 	return nil
 }
+
+func RequireBrowser(value model.ConnectionProfile) error {
+	if err := RequireProfile(value); err != nil {
+		return err
+	}
+	if !value.MCPPolicy.AllowBrowser {
+		return model.NewAppError("MCP_TOOL_FORBIDDEN", "此连接配置未授权 MCP 网页访问", "mcp_policy", false)
+	}
+	return nil
+}
+
+func RequireFileBrowse(value model.ConnectionProfile) error {
+	if err := RequireProfile(value); err != nil {
+		return err
+	}
+	if !value.MCPPolicy.AllowFileUpload && !value.MCPPolicy.AllowFileDownload {
+		return model.NewAppError("MCP_TOOL_FORBIDDEN", "浏览远端目录需要 MCP 文件上传或下载权限", "mcp_policy", false)
+	}
+	return nil
+}
