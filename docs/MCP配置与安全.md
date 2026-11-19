@@ -81,6 +81,10 @@ MCP 服务具有以下边界：
 - Streamable HTTP MCP；
 - 为 MCP 请求添加自定义 `Authorization` 请求头。
 
+LabRemote 对 `/mcp` 使用无状态 HTTP。每个 POST 单独鉴权，服务重启后，客户端可以继续发送工具请求，即使还携带旧的 `Mcp-Session-Id`。工具的结果仍可在 POST 响应中以 SSE 返回。客户端取消该 POST 时，取消信号会传给正在执行的工具。
+
+MCP 交互终端、上传、下载和网页代理依照各自的资源 ID 管理。关闭 MCP 或重启 LabRemote 会回收这些资源，之后需要重新创建。
+
 如果客户端只支持 `stdio`，或者不允许设置请求头，则不能直接连接此服务。不要通过删除鉴权、改为公网监听或把 Token 写入 URL 来规避限制。
 
 Token 等同于本机 MCP 访问凭据：
@@ -578,6 +582,9 @@ MCP 工具不能读取、写入、缩放或关闭图形界面创建的终端。�
 | `MCP_BUSY` / 端口无法监听 | 端口被占用，或命令/会话达到并发上限 | 更换端口；关闭不用的会话；等待命令结束 |
 | HTTP 401 / `MCP_UNAUTHORIZED` | Token 缺失、错误或已重新生成 | 从界面重新复制完整配置并重载客户端 |
 | HTTP 403 | 请求不是来自回环地址，或 Host/Origin 不符合限制 | 使用复制出的 `127.0.0.1` 地址，不要通过代理或端口转发 |
+| HTTP 404，响应为 `session not found` | 旧版 LabRemote 依赖 HTTP 会话，服务重启后旧会话已失效 | 升级到 LabRemote 1.7.1 或更新版本。使用旧版时，通过新的 `initialize` 重建会话 |
+| HTTP 404，响应为 `404 page not found` | HTTP 请求路径有误 | 核对 LabRemote 界面显示的地址和 `/mcp` 路径 |
+| HTTP 405，发生在 GET 或 DELETE | 无状态 MCP 端点通过 POST 接收工具请求 | 将客户端配置为 Streamable HTTP，通过 POST 调用工具 |
 | HTTP 429 | 一分钟内超过 120 个请求 | 等待 `Retry-After` 指示的时间，降低轮询频率 |
 | `MCP_PROFILE_FORBIDDEN` | Profile 未授权给 MCP，或 `profile_id` 不正确 | 编辑连接开启 MCP 可见权限，再通过 `profiles_list` 获取 ID |
 | `MCP_TOOL_FORBIDDEN` | 未授予命令、交互、文件上传、文件下载、网页或断开权限；或存在图形终端、桌面网页代理时请求断开 | 调整最小必要权限，或由用户在图形界面处理活动资源 |
