@@ -70,11 +70,10 @@ func (c *Controller) Start(ctx context.Context, port int) (Status, error) {
 	if err != nil {
 		return Status{}, model.NewAppError("MCP_BUSY", "MCP 本机端口无法监听", "mcp_start", true).WithDetails(map[string]any{"port": port})
 	}
-	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "LabRemote", Version: "1.7.0"}, nil)
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "LabRemote", Version: "1.7.1"}, nil)
 	addTools(mcpServer, c)
-	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer }, nil)
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", securityMiddleware(mcpHandler, string(token), port, newRateLimiter(120)))
+	mux.Handle("/mcp", securityMiddleware(newMCPHTTPHandler(mcpServer), string(token), port, newRateLimiter(120)))
 	server := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -92,6 +91,34 @@ func (c *Controller) Start(ctx context.Context, port int) (Status, error) {
 		_ = server.Serve(listener)
 	}()
 	return c.statusLocked(), nil
+}
+
+type mcpHTTPRequestContextKey struct{}
+
+func newMCPHTTPHandler(server *mcp.Server) http.Handler {
+	// 旧版协议的 SDK 会剥离 HTTP 取消信号。无状态工具调用随原 POST 一起取消。
+	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			httpCtx, ok := ctx.Value(mcpHTTPRequestContextKey{}).(context.Context)
+			if !ok || method != "tools/call" {
+				return next(ctx, method, request)
+			}
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			stop := context.AfterFunc(httpCtx, cancel)
+			defer stop()
+			if httpCtx.Err() != nil {
+				cancel()
+			}
+			return next(ctx, method, request)
+		}
+	})
+	// 工具使用 LabRemote 自己的资源 ID，HTTP 服务重启后可以直接接收新请求。
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		handler.ServeHTTP(w, r.WithContext(context.WithValue(ctx, mcpHTTPRequestContextKey{}, ctx)))
+	})
 }
 
 func (c *Controller) Stop(ctx context.Context) error {
